@@ -39,18 +39,12 @@ function seedData(){
       { id: 9,  naam: "Seppe",     rol: "lid",     admin: false, specialisaties: [], volgorde: 9, discordId: "", callsign: "", status: "Actief" },
       { id: 10, naam: "Adam",      rol: "lid",     admin: false, specialisaties: [], volgorde: 10, discordId: "", callsign: "", status: "Actief" }
     ],
-    accessCodes: [
-      { code: "KF7421", memberId: 1 },
-      { code: "VP3384", memberId: 2 },
-      { code: "HN6712", memberId: 3 },
-      { code: "QW2048", memberId: 4 },
-      { code: "LM5566", memberId: 5 },
-      { code: "TK8821", memberId: 6 },
-      { code: "ZF1147", memberId: 7 },
-      { code: "GC4409", memberId: 8 },
-      { code: "RW9032", memberId: 9 },
-      { code: "BD5502", memberId: 10 }
-    ],
+    // Deze seed-functie wordt enkel ooit gebruikt bij een volledig lege/nieuwe Firestore-database
+    // (eerste opstart); eenmaal er data in Firestore staat, wordt dit nooit meer uitgevoerd. Geen
+    // vaste/echte toegangscodes hier plaatsen: die zouden anders blijvend zichtbaar staan in de
+    // (eventueel publieke) broncode. Leden/admins genereren na een eventuele herstart hun codes
+    // gewoon opnieuw via Beheer > Toegangscodes.
+    accessCodes: [],
     dossiers: [
       {
         id: "kingfisher", naam: "Kingfisher", status: "open",
