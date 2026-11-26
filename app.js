@@ -2157,6 +2157,7 @@ function openDocDetail(doc, dossierObj, session){
           ${doc.titel ? `<div style="font-size:14px;font-weight:700;margin-bottom:10px">${doc.titel}</div>` : ""}
           ${doc.inhoud ? `<div class="verslag-tekst" style="margin-bottom:${rows.length || aanvullingen.length ? "14px" : "0"}">${renderOpgemaakteTekst(doc.inhoud)}</div>` : ""}
           ${tableHtml}
+          ${fotosGalerijHtml(doc.foto_s, "margin-top:10px")}
           ${bijstandExtraHtml(doc)}
           ${aanvullingenHtml}
           ${linkLine}
@@ -2350,6 +2351,7 @@ function docExportHtml(doc, dossierObj){
           ${doc.titel ? `<div style="font-size:14px;font-weight:700;margin-bottom:10px">${doc.titel}</div>` : ""}
           ${doc.inhoud ? `<div class="verslag-tekst" style="margin-bottom:${rows.length || aanvullingen.length ? "14px" : "0"}">${renderOpgemaakteTekst(doc.inhoud)}</div>` : ""}
           ${tableHtml}
+          ${fotosGalerijHtml(doc.foto_s, "margin-top:10px")}
           ${bijstandExtraHtml(doc)}
           ${aanvullingenHtml}
           ${linkLine}
@@ -2655,10 +2657,9 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
           ${toontPostcode ? `<div class="field"><label>Postcode (optioneel)</label><input class="sec-postcode" data-i="${i}" value="${s.postcode}" placeholder="Bv. 2000"></div>` : ""}
         </div>
         <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:vertical">${s.tekst}</textarea></div>
-        ${toontPostcode ? `
         <div class="field"><label>Foto's (optioneel)</label>
           <div class="sec-fotos-wrap" data-i="${i}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
-        </div>` : ""}
+        </div>
       </div>
     `).join("");
 
@@ -2882,10 +2883,10 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
         </div>
       </div>
     `).join("");
-    const fotosHtml = isCSI ? `
+    const fotosHtml = `
       <div class="field"><label>Foto's van de tussenkomst</label>
         <div id="tkFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
-      </div>` : "";
+      </div>`;
 
     modalBody.innerHTML = `
       <div class="modal-head"><h2>${type} ${isEdit ? "bewerken" : "toevoegen"}</h2><button class="modal-close" id="mClose">&times;</button></div>
@@ -2942,7 +2943,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
         existingDoc.tijdstippen = tijdstippen.length ? tijdstippen : [{ label: "", tijd: "" }];
         existingDoc.rows = rows;
         existingDoc.aanwezigen = state.aanwezigen;
-        if (isCSI) existingDoc.foto_s = state.foto_s;
+        existingDoc.foto_s = state.foto_s;
         logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
       } else {
         const newDoc = {
@@ -2951,9 +2952,9 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
           tijdstippen: tijdstippen.length ? tijdstippen : [{ label: "", tijd: "" }],
           rows,
           aanwezigen: state.aanwezigen,
-          gezienDoor: [session.id]
+          gezienDoor: [session.id],
+          foto_s: state.foto_s
         };
-        if (isCSI) newDoc.foto_s = state.foto_s;
         dossierObj.documenten.push(newDoc);
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
       }
@@ -3141,6 +3142,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     pandFotos: (existingDoc && existingDoc.pandFotos || []).slice(),
     dossierbeheerders: (existingDoc && existingDoc.dossierbeheerders) || "",
     externLink: (existingDoc && existingDoc.externLink) || "",
+    foto_s: (existingDoc && existingDoc.foto_s || []).slice(),
     rows: (existingDoc && existingDoc.rows && existingDoc.rows.length && existingDoc.rows.map(r => ({ label: r.label, waarde: r.waarde }))) || defaultRows,
     aanwezigen: (existingDoc && existingDoc.aanwezigen) || []
   };
@@ -3180,6 +3182,9 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         </div>
         <div class="field"><label>Dossierbeheerder(s)</label><input id="fDossierbeheerders" value="${state.dossierbeheerders}" placeholder="Bv. Unemi, Jelle"></div>
       ` : ""}
+      <div class="field"><label>Foto's (optioneel)</label>
+        <div id="resultatenFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+      </div>
       <div class="field"><label>Externe link (optioneel)</label><input id="fLink" value="${state.externLink}" placeholder="https://docs.google.com/..."></div>
       <button class="btn btn-gold" id="saveResultatenBtn" style="width:100%;justify-content:center;margin-top:14px">${isEdit ? "Wijzigingen opslaan" : "Opslaan in dossier " + dossierObj.naam}</button>
     `;
@@ -3209,6 +3214,8 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#addRowBtn").addEventListener("click", () => { state.rows.push({ label: "", waarde: "" }); render_(); });
     if (modalBody.querySelector("#verdachtenFotosWrap")){ if (!state.verdachtenFotos) state.verdachtenFotos = []; maakFotoWidget(modalBody.querySelector("#verdachtenFotosWrap"), state.verdachtenFotos, session); }
     if (modalBody.querySelector("#pandFotosWrap")){ if (!state.pandFotos) state.pandFotos = []; maakFotoWidget(modalBody.querySelector("#pandFotosWrap"), state.pandFotos, session); }
+    if (!state.foto_s) state.foto_s = [];
+    maakFotoWidget(modalBody.querySelector("#resultatenFotosWrap"), state.foto_s, session);
     modalBody.querySelector("#saveResultatenBtn").addEventListener("click", () => {
       const auteur = readAuteur(session);
       const datum = modalBody.querySelector("#fDatum").value.trim() || "&ndash;";
@@ -3230,6 +3237,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         Object.assign(existingDoc, bijstandExtra);
         existingDoc.titel = titel; existingDoc.inhoud = inhoud; existingDoc.externLink = externLink;
         existingDoc.rows = rows;
+        existingDoc.foto_s = state.foto_s || [];
         existingDoc.aanwezigen = state.aanwezigen;
         logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
       } else {
@@ -3237,6 +3245,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
           id: "d" + (db.nextDocId++),
           type,
           auteur, datum, tijd, titel, inhoud, externLink, rows,
+          foto_s: state.foto_s || [],
           ...bijstandExtra,
           aanwezigen: state.aanwezigen,
           aanvullingen: [],
