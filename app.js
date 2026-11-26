@@ -1286,6 +1286,38 @@ function dossierKaartTab(d, session){
   function docsVoorPostcode(pc){
     return (d.documenten || []).filter(doc => doc.postcode === pc || (doc.locaties && doc.locaties.some(l => l.postcode === pc)) || (doc.secties && doc.secties.some(s => s.postcode === pc)));
   }
+  // Toont meteen de inhoud die specifiek over deze postcode gaat (de tekst/foto's van die
+  // locatie of sectie, of de bevindingen bij een tussenkomst), in plaats van enkel een kaartje
+  // dat je dan nog moet openklikken. Een link onderaan laat nog toe het volledige document te
+  // bekijken (bv. voor aanwezigen, sporen/inbeslagname, andere locaties in hetzelfde verslag).
+  function postcodeInhoudHtml(doc, pc){
+    if (doc.locaties){
+      return doc.locaties.filter(l => l.postcode === pc).map(l => `
+        <div style="margin-bottom:10px">
+          <div class="muted" style="font-size:11px;margin-bottom:3px">${l.datum || ""} ${l.tijd || ""}</div>
+          <div class="verslag-tekst">${renderOpgemaakteTekst(l.tekst) || `<span class="muted">Geen tekst ingevuld.</span>`}</div>
+          ${fotosGalerijHtml(l.foto_s, "")}
+        </div>`).join("");
+    }
+    if (doc.secties){
+      return doc.secties.filter(s => s.postcode === pc).map(s => `
+        <div style="margin-bottom:10px">
+          ${s.kop ? `<div style="font-weight:600;font-size:13px;margin-bottom:3px">${escapeHtml(s.kop)}</div>` : ""}
+          <div class="verslag-tekst">${renderOpgemaakteTekst(s.tekst) || `<span class="muted">Geen tekst ingevuld.</span>`}</div>
+          ${fotosGalerijHtml(s.fotos, "")}
+        </div>`).join("");
+    }
+    if (doc.postcode === pc){
+      const rowsHtml = (doc.rows || []).filter(r => r.label || r.waarde).map(r => `<div style="font-size:13px;margin-bottom:2px"><strong>${escapeHtml(r.label)}</strong>${r.label && r.waarde ? " &mdash; " : ""}${escapeHtml(r.waarde)}</div>`).join("");
+      return `
+        <div style="margin-bottom:10px">
+          <div class="verslag-tekst">${renderOpgemaakteTekst(doc.bevindingen) || `<span class="muted">Geen bevindingen ingevuld.</span>`}</div>
+          ${fotosGalerijHtml(doc.foto_s, "")}
+          ${rowsHtml ? `<div style="margin-top:8px">${rowsHtml}</div>` : ""}
+        </div>`;
+    }
+    return "";
+  }
   function toonUitleg(pc){
     inner.querySelectorAll(".map-pin").forEach(p => p.classList.toggle("map-pin-active", p.dataset.pc === pc));
     uitlegWrap.innerHTML = "";
@@ -1296,7 +1328,19 @@ function dossierKaartTab(d, session){
       uitlegWrap.appendChild(el(`<div class="muted" style="font-size:13px">Geen documenten gekoppeld.</div>`));
       return;
     }
-    docs.forEach(doc => uitlegWrap.appendChild(docRow(doc, d, session)));
+    docs.forEach(doc => {
+      const kaart = el(`<div class="card" style="margin-bottom:8px">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <span class="chip ${docTypeChipClass(doc.type)}">${doc.type}</span>
+          <span class="muted" style="font-size:11px">${doc.datum || ""} &middot; ${doc.auteur || ""}</span>
+        </div>
+        ${postcodeInhoudHtml(doc, pc)}
+        <div class="hint doc-open-link" style="cursor:pointer;margin-top:4px">Volledig document openen &rarr;</div>
+      </div>`);
+      kaart.querySelector(".doc-open-link").addEventListener("click", () => openDocDetail(doc, d, session));
+      wireFotosGalerij(kaart);
+      uitlegWrap.appendChild(kaart);
+    });
   }
   gekend.forEach(pc => {
     const pin = el(`<div class="map-pin map-pin-clickable" data-pc="${pc}" style="left:${plekken[pc].x * 100}%;top:${plekken[pc].y * 100}%" title="Postcode ${pc}">
