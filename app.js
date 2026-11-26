@@ -2320,9 +2320,10 @@ const VERSLAG_DOC_TYPES = ["OBN-verslag", "CSI-verslag", "GO-verslag"];
 // Bepaalt, in vaste volgorde, welke documenttypes deze gebruiker mag kiezen.
 function getAvailableDocTypes(session){
   const admin = isAdmin(session);
+  const leiding = session.rol === "leiding";
   const specs = session.specialisaties || [];
   return [
-    { type: "Melding", kind: "simple", label: "Melding", visible: admin },
+    { type: "Melding", kind: "simple", label: "Melding", visible: admin || leiding },
     { type: "Algemeen verslag", kind: "simple", label: "Algemeen verslag", visible: true },
     { type: "Bijkomende informatie", kind: "simple", label: "Bijkomende informatie", visible: true },
     { type: "OBN-verslag", kind: "verslag", label: "OBN-verslag", visible: admin || specs.includes("OBN") },
@@ -2332,7 +2333,7 @@ function getAvailableDocTypes(session){
     { type: "Verhoor-verslag", kind: "verhoor", label: "Verhoor-verslag", visible: true },
     { type: "Beschikbare resultaten", kind: "resultaten", label: "Beschikbare resultaten", visible: admin },
     { type: "TAP-dossier", kind: "resultaten", label: "TAP-dossier", visible: admin },
-    { type: "Bijstandsaanvraag", kind: "resultaten", label: "Bijstandsaanvraag", visible: admin }
+    { type: "Bijstandsaanvraag", kind: "resultaten", label: "Bijstandsaanvraag", visible: admin || leiding }
   ].filter(x => x.visible);
 }
 
