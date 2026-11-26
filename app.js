@@ -383,6 +383,11 @@ function getSession(){
 function isAdmin(session){
   return !!(session && session.rol === "leiding" && session.admin === true);
 }
+// Leiding (admin of niet) en hoofdrechercheur mogen het Beheer-tabblad zien; binnen Beheer zelf
+// bepalen de specifieke functies verder wat ze precies mogen (zie beheerLeden/openMemberForm).
+function magBeheerZien(session){
+  return !!(session && (session.rol === "leiding" || session.rol === "hoofdrechercheur"));
+}
 function login(code){
   const entry = db.accessCodes.find(c => c.code.toUpperCase() === code.trim().toUpperCase());
   if (!entry) return false;
@@ -566,7 +571,7 @@ function renderNav(){
   if (session){
     items.push({ key: "dossiers", label: "Dossiers" });
     items.push({ key: "opleidingen", label: "Opleidingen" });
-    if (session.rol === "leiding") items.push({ key: "beheer", label: "Beheer" });
+    if (magBeheerZien(session)) items.push({ key: "beheer", label: "Beheer" });
   }
 
   items.forEach(item => {
@@ -3162,10 +3167,22 @@ function beheerActiviteitenlog(session){
   return wrap;
 }
 
+// Bepaalt wat de ingelogde gebruiker mag doen met een specifiek lid:
+// "full"   = alles bewerken (naam, callsign, status, rol, specialisaties, eventueel adminrechten)
+// "status" = enkel de status (Actief/Inactief/Verlof) wijzigen
+// "none"   = niets, knop niet tonen
+function memberManageLevel(viewerSession, m){
+  if (isAdmin(viewerSession)) return "full";
+  if (viewerSession.rol === "leiding") return m.rol === "leiding" ? "none" : "full";
+  if (viewerSession.rol === "hoofdrechercheur") return (m.rol === "lid" || m.rol === "opleiding") ? "status" : "none";
+  return "none";
+}
+
 function beheerLeden(session){
   const viewerIsAdmin = isAdmin(session);
+  const viewerIsLeiding = session.rol === "leiding";
   const wrap = el(`<div>
-    <button class="btn btn-gold btn-sm" id="addMemberBtn" style="margin-bottom:16px">+ Lid toevoegen</button>
+    ${viewerIsLeiding ? `<button class="btn btn-gold btn-sm" id="addMemberBtn" style="margin-bottom:16px">+ Lid toevoegen</button>` : ""}
     <div class="card" style="padding:0;overflow:hidden"><table class="simple">
       <thead><tr>${viewerIsAdmin ? "<th></th>" : ""}<th>Status</th><th>Callsign</th><th>Naam</th><th>Discord ID</th><th>Rol</th><th>Specialisatie(s)</th><th></th></tr></thead>
       <tbody id="mBody"></tbody>
@@ -3174,8 +3191,7 @@ function beheerLeden(session){
   const body = wrap.querySelector("#mBody");
   const sorted = db.members.slice().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0));
   sorted.forEach((m, i) => {
-    // Enkel admin mag een leidinggevend lid bewerken; gewone leiding mag enkel rechercheurs bewerken.
-    const mayEdit = viewerIsAdmin || m.rol !== "leiding";
+    const level = memberManageLevel(session, m);
     const tr = el(`<tr>
       ${viewerIsAdmin ? `<td style="white-space:nowrap">
         <button class="btn btn-ghost btn-sm move-up" data-id="${m.id}" ${i === 0 ? "disabled style=\"opacity:.3;cursor:default\"" : ""} title="Omhoog">&uarr;</button>
@@ -3187,9 +3203,9 @@ function beheerLeden(session){
       <td class="muted">${m.discordId || "&mdash;"}</td>
       <td><span class="chip ${rolChipClass(m.rol)}">${rolLabel(m.rol)}</span></td>
       <td>${m.specialisaties.join(", ") || "&mdash;"}</td>
-      <td style="text-align:right">${mayEdit ? `<button class="btn btn-ghost btn-sm edit-m" data-id="${m.id}">Bewerken</button>` : `<span class="muted" style="font-size:11px">Enkel admin</span>`}</td>
+      <td style="text-align:right">${level !== "none" ? `<button class="btn btn-ghost btn-sm edit-m" data-id="${m.id}">${level === "status" ? "Status wijzigen" : "Bewerken"}</button>` : `<span class="muted" style="font-size:11px">Geen toegang</span>`}</td>
     </tr>`);
-    if (mayEdit) tr.querySelector(".edit-m").addEventListener("click", () => openMemberForm(m, session));
+    if (level !== "none") tr.querySelector(".edit-m").addEventListener("click", () => openMemberForm(m, session));
     if (viewerIsAdmin){
       const upBtn = tr.querySelector(".move-up");
       const downBtn = tr.querySelector(".move-down");
@@ -3198,7 +3214,7 @@ function beheerLeden(session){
     }
     body.appendChild(tr);
   });
-  wrap.querySelector("#addMemberBtn").addEventListener("click", () => openMemberForm(null, session));
+  if (viewerIsLeiding) wrap.querySelector("#addMemberBtn").addEventListener("click", () => openMemberForm(null, session));
   return wrap;
 }
 
@@ -3231,12 +3247,19 @@ function openMemberForm(member, viewerSession){
   const m = member || { id: null, naam: "", callsign: "", discordId: "", rol: "opleiding", status: "Actief", admin: false, specialisaties: [] };
   const specOptions = ["OBN", "CSI", "GO"];
   const viewerIsAdmin = isAdmin(viewerSession);
+  // Enkel leiding kan een nieuw lid aanmaken (zie beheerLeden), dus bij "isNew" mag alles.
+  // Bij een bestaand lid bepaalt memberManageLevel of de viewer alles mag, of enkel de status
+  // (hoofdrechercheur t.o.v. de rechercheurs/opleiding onder hem).
+  const level = isNew ? "full" : memberManageLevel(viewerSession, m);
+  const statusOnly = level === "status";
 
   openModal(`
-    <div class="modal-head"><h2>${isNew ? "Lid toevoegen" : "Lid bewerken"}</h2><button class="modal-close" id="mClose">&times;</button></div>
+    <div class="modal-head"><h2>${isNew ? "Lid toevoegen" : (statusOnly ? "Status wijzigen" : "Lid bewerken")}</h2><button class="modal-close" id="mClose">&times;</button></div>
+    ${statusOnly ? `<div class="hint" style="margin-bottom:14px">${m.naam} &mdash; je mag enkel de status van dit lid wijzigen.</div>` : ""}
+    ${!statusOnly ? `
     <div class="field"><label>Callsign (optioneel)</label><input id="fCallsign" class="mono" value="${m.callsign || ""}" placeholder="Bv. COBRA-3"></div>
     <div class="field"><label>Naam</label><input id="fNaam" value="${m.naam}"></div>
-    <div class="field"><label>Discord ID (optioneel)</label><input id="fDiscordId" class="mono" value="${m.discordId || ""}" placeholder="Bv. 412345678901234567"></div>
+    <div class="field"><label>Discord ID (optioneel)</label><input id="fDiscordId" class="mono" value="${m.discordId || ""}" placeholder="Bv. 412345678901234567"></div>` : ""}
     <div class="field"><label>Status</label>
       <select id="fStatus">
         <option value="Actief" ${(m.status || "Actief") === "Actief" ? "selected" : ""}>Actief</option>
@@ -3244,8 +3267,9 @@ function openMemberForm(member, viewerSession){
         <option value="Verlof" ${m.status === "Verlof" ? "selected" : ""}>Verlof</option>
       </select>
     </div>
+    ${!statusOnly ? `
     <div class="field"><label>Rol</label>
-      <select id="fRol" ${!viewerIsAdmin ? "disabled style=\"opacity:.55;cursor:not-allowed\"" : ""}>
+      <select id="fRol">
         <option value="opleiding" ${m.rol === "opleiding" ? "selected" : ""}>Rechercheur in opleiding</option>
         <option value="lid" ${m.rol === "lid" ? "selected" : ""}>Rechercheur</option>
         <option value="hoofdrechercheur" ${m.rol === "hoofdrechercheur" ? "selected" : ""}>Hoofdrechercheur</option>
@@ -3260,23 +3284,32 @@ function openMemberForm(member, viewerSession){
     </div>` : ""}
     <div class="field"><label>Specialisatie(s) &mdash; max 3</label>
       <div>${specOptions.map(s => `<label style="margin-right:14px;font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" class="fSpec" value="${s}" ${m.specialisaties.includes(s) ? "checked" : ""}> ${s}</label>`).join("")}</div>
-    </div>
+    </div>` : ""}
     <div style="display:flex;gap:10px;margin-top:10px">
       <button class="btn btn-gold" id="saveMember">Opslaan</button>
-      ${!isNew ? `<button class="btn btn-danger" id="deleteMember">Verwijderen</button>` : ""}
+      ${!isNew && !statusOnly ? `<button class="btn btn-danger" id="deleteMember">Verwijderen</button>` : ""}
     </div>
   `);
   document.getElementById("mClose").addEventListener("click", closeModal);
-  if (viewerIsAdmin){
+  if (viewerIsAdmin && !statusOnly){
     document.getElementById("fRol").addEventListener("change", (e) => {
       document.getElementById("adminField").style.display = e.target.value === "leiding" ? "flex" : "none";
     });
   }
   document.getElementById("saveMember").addEventListener("click", () => {
+    const status = document.getElementById("fStatus").value;
+    if (statusOnly){
+      // Enkel de status wordt aangepast; alle andere velden blijven exact zoals ze waren.
+      member.status = status;
+      logActiviteit(viewerSession, `Status gewijzigd naar "${status}": "${member.naam}"`);
+      DB.save(db);
+      closeModal();
+      render();
+      return;
+    }
     const naam = document.getElementById("fNaam").value.trim();
     const callsign = document.getElementById("fCallsign").value.trim();
     const discordId = document.getElementById("fDiscordId").value.trim();
-    const status = document.getElementById("fStatus").value;
     const rol = document.getElementById("fRol").value;
     // Enkel een admin-viewer mag adminrechten toekennen of afnemen; anders blijft de bestaande waarde ongewijzigd.
     const admin = viewerIsAdmin
@@ -3300,7 +3333,7 @@ function openMemberForm(member, viewerSession){
     closeModal();
     render();
   });
-  if (!isNew){
+  if (!isNew && !statusOnly){
     document.getElementById("deleteMember").addEventListener("click", () => {
       db.members = db.members.filter(x => x.id !== member.id);
       db.accessCodes = db.accessCodes.filter(c => c.memberId !== member.id);
@@ -3547,7 +3580,7 @@ function render(){
   const session = getSession();
   const protectedTabs = ["dossiers", "opleidingen", "beheer"];
   if (!session && protectedTabs.includes(view.tab)) view.tab = "overons";
-  if (session && session.rol !== "leiding" && view.tab === "beheer") view.tab = "dossiers";
+  if (session && !magBeheerZien(session) && view.tab === "beheer") view.tab = "dossiers";
 
   renderNav();
   renderApp();
