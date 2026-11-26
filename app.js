@@ -14,10 +14,15 @@ const firebaseConfig = {
   appId: "1:447517609100:web:aa2673a41e4ccde1d83fa9"
 };
 let firestoreDocRef = null;
+// Foto's staan NIET in het hoofddocument (dat zou de live-sync van alles zwaar en traag maken),
+// maar elk in hun eigen klein document in een aparte collectie, enkel opgehaald wanneer een foto
+// ook echt getoond moet worden. Zo blijft alles behalve de foto's zelf razendsnel synchroniseren.
+let fotosCollectionRef = null;
 try {
   if (typeof firebase === "undefined") throw new Error("Firebase-script niet geladen (CDN onbereikbaar?).");
   firebase.initializeApp(firebaseConfig);
   firestoreDocRef = firebase.firestore().collection("recherche").doc("hoofddata");
+  fotosCollectionRef = firebase.firestore().collection("recherche_fotos");
 } catch (err){
   console.error("Firebase-initialisatie mislukt:", err);
   document.addEventListener("DOMContentLoaded", () => {
@@ -332,6 +337,23 @@ function migrateDb(data){
     });
     data.gelezenStatusV1 = true;
   }
+  // Foto's waren tot nu toe enkel een aantal (een teller, zonder echte beeldgegevens erachter);
+  // vanaf nu is elk foto-veld een reeks foto-ID's die verwijzen naar een los document in de
+  // "recherche_fotos"-collectie. Een ouder getal kan niet omgezet worden naar een echte foto (er
+  // stond nooit beeldmateriaal achter), dus wordt hier eenmalig een lege reeks van gemaakt.
+  const naarFotoArray = (v) => Array.isArray(v) ? v : [];
+  (data.dossiers || []).forEach(d => {
+    (d.betrokkenen || []).forEach(b => { b.fotos = naarFotoArray(b.fotos); });
+    (d.voertuigen || []).forEach(v => { v.fotos = naarFotoArray(v.fotos); });
+    (d.documenten || []).forEach(doc => {
+      (doc.secties || []).forEach(s => { s.fotos = naarFotoArray(s.fotos); });
+      (doc.locaties || []).forEach(l => { l.foto_s = naarFotoArray(l.foto_s); });
+      if (doc.foto_s !== undefined) doc.foto_s = naarFotoArray(doc.foto_s);
+      if (doc.verdachtenFotos !== undefined) doc.verdachtenFotos = naarFotoArray(doc.verdachtenFotos);
+      if (doc.pandFotos !== undefined) doc.pandFotos = naarFotoArray(doc.pandFotos);
+      (doc.aanvullingen || []).forEach(a => { if (a.foto_s !== undefined) a.foto_s = naarFotoArray(a.foto_s); });
+    });
+  });
   return data;
 }
 let db = null;
@@ -568,6 +590,139 @@ function wireOpmaakToolbars(container, selector){
     if (ta.dataset.opmaakGewired) return;
     ta.dataset.opmaakGewired = "1";
     maakOpmaakToolbar(ta);
+  });
+}
+
+// ============================================================
+// Foto's — elke foto wordt vóór opslag in de browser verkleind/gecomprimeerd en als eigen klein
+// document bewaard in de Firestore-collectie "recherche_fotos" (gratis Spark-plan, geen Storage/
+// Blaze-abonnement nodig). Overal in dossiers/verslagen wordt enkel het foto-ID bijgehouden
+// (in een reeks zoals vroeger het aantal bijgehouden werd); de echte beeldgegevens worden pas
+// opgehaald wanneer een foto ook getoond moet worden, en dan in het geheugen gecached.
+// ============================================================
+function genereerFotoId(){
+  return "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+// Leest een gekozen bestand in, tekent het verkleind op een canvas en levert het resultaat als
+// JPEG-base64 op (ruim voldoende leesbaar voor een dossier, maar typisch maar enkele tientallen
+// tot ~150 KB groot, zodat we ruim binnen de gratis Firestore-limieten blijven).
+function comprimeerFoto(file, maxBreedte, kwaliteit){
+  maxBreedte = maxBreedte || 900;
+  kwaliteit = kwaliteit || 0.6;
+  return new Promise((resolve, reject) => {
+    if (!file.type || !file.type.startsWith("image/")){ reject(new Error("Geen afbeeldingsbestand.")); return; }
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Kon bestand niet lezen."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Kon de afbeelding niet lezen."));
+      img.onload = () => {
+        const schaal = Math.min(1, maxBreedte / img.width);
+        const w = Math.max(1, Math.round(img.width * schaal));
+        const h = Math.max(1, Math.round(img.height * schaal));
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", kwaliteit));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// Comprimeert en uploadt een foto als nieuw document; levert het gegenereerde foto-ID op zodra
+// het klaar is (dat ID wordt dan ergens in db.* bijgehouden, bv. in een secties[i].fotos-reeks).
+function uploadFoto(file, session){
+  if (!fotosCollectionRef) return Promise.reject(new Error("Geen databaseverbinding."));
+  return comprimeerFoto(file).then(dataUrl => {
+    const id = genereerFotoId();
+    return fotosCollectionRef.doc(id).set({
+      data: dataUrl,
+      doorId: (session && session.id) || null,
+      opTijdstip: new Date().toISOString()
+    }).then(() => id);
+  });
+}
+const fotoCache = {};
+// Haalt (eenmalig, niet live) de beeldgegevens van een foto op en roept dan onGeladen(dataUrl) aan;
+// bij een reeds gecachete foto gebeurt dat meteen en synchroon.
+function laadFoto(id, onGeladen){
+  if (fotoCache[id]){ onGeladen(fotoCache[id]); return; }
+  if (!fotosCollectionRef) return;
+  fotosCollectionRef.doc(id).get().then(snap => {
+    if (snap.exists){
+      fotoCache[id] = snap.data().data;
+      onGeladen(fotoCache[id]);
+    }
+  }).catch(err => console.error("Foto laden mislukt:", err));
+}
+function openFotoLightbox(dataUrl){
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:300;display:flex;align-items:center;justify-content:center;padding:24px;cursor:zoom-out";
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.style.cssText = "max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.5)";
+  overlay.appendChild(img);
+  overlay.addEventListener("click", () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+// Bewerkbaar foto-widgetje voor in formulieren: toont de al toegevoegde foto's (met een kruisje
+// om te verwijderen) plus een "+"-knop om een nieuwe foto te kiezen, comprimeren en uploaden.
+// "idsRef" is de array die in de form-state hoort (bv. state.secties[i].fotos) &mdash; wordt in
+// place aangepast zodat de bestaande save-logica er niets van hoeft te weten.
+function maakFotoWidget(container, idsRef, session){
+  function tekenen(){
+    container.innerHTML = "";
+    idsRef.forEach((id, i) => {
+      const thumb = document.createElement("div");
+      thumb.className = "photothumb";
+      thumb.title = "Klik om te verwijderen";
+      thumb.style.backgroundSize = "cover";
+      thumb.style.backgroundPosition = "center";
+      laadFoto(id, (dataUrl) => { thumb.style.backgroundImage = `url(${dataUrl})`; });
+      thumb.addEventListener("click", () => { idsRef.splice(i, 1); tekenen(); });
+      container.appendChild(thumb);
+    });
+    const addBtn = document.createElement("div");
+    addBtn.className = "photothumb";
+    addBtn.textContent = "+";
+    addBtn.title = "Foto toevoegen";
+    addBtn.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "file"; input.accept = "image/*";
+      input.addEventListener("change", () => {
+        const file = input.files[0];
+        if (!file) return;
+        addBtn.textContent = "…";
+        uploadFoto(file, session).then(id => { idsRef.push(id); tekenen(); }).catch(err => {
+          console.error("Foto uploaden mislukt:", err);
+          alert("Foto uploaden mislukt. Controleer je internetverbinding en probeer opnieuw.");
+          addBtn.textContent = "+";
+        });
+      });
+      input.click();
+    });
+    container.appendChild(addBtn);
+  }
+  tekenen();
+}
+// Niet-bewerkbare foto-galerij voor in detailweergaves/export: levert eerst lege plaatshouders op
+// (de HTML-string) &mdash; roep na het invoegen in de pagina altijd wireFotosGalerij() aan op de
+// omliggende container, zodat de echte beeldgegevens alsnog opgehaald en getoond worden.
+function fotosGalerijHtml(ids, stijl){
+  if (!ids || !ids.length) return "";
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;${stijl || "margin-top:8px"}">${ids.map(id => `<div class="pv-photo" data-foto-id="${id}"></div>`).join("")}</div>`;
+}
+function wireFotosGalerij(container){
+  container.querySelectorAll("[data-foto-id]").forEach(el => {
+    const id = el.dataset.fotoId;
+    laadFoto(id, (dataUrl) => {
+      el.style.backgroundImage = `url(${dataUrl})`;
+      el.style.backgroundSize = "cover";
+      el.style.backgroundPosition = "center";
+      el.style.cursor = "pointer";
+      el.addEventListener("click", () => openFotoLightbox(dataUrl));
+    });
   });
 }
 function memberName(id){ const m = db.members.find(x => x.id === id); return m ? m.naam : "?"; }
@@ -1460,12 +1615,11 @@ function datumTijdHtml(doc){
 // als de PDF-export, zodat beide altijd dezelfde opbouw tonen.
 function bijstandExtraHtml(doc){
   if (doc.type !== "Bijstandsaanvraag") return "";
-  const fotosHtml = (n) => n ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">${Array.from({length:n}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : "";
-  const blok = (label, tekst, fotoCount) => (tekst || fotoCount) ? `
+  const blok = (label, tekst, fotoIds) => (tekst || (fotoIds && fotoIds.length)) ? `
     <div class="pv-loc">
       <div class="lbl">${label}</div>
       ${tekst ? `<div class="verslag-tekst" style="margin-top:8px">${renderOpgemaakteTekst(tekst)}</div>` : ""}
-      ${fotosHtml(fotoCount)}
+      ${fotosGalerijHtml(fotoIds, "margin-top:10px")}
     </div>` : "";
   return [
     blok("Reden / context &amp; omschrijving opdracht", doc.reden),
@@ -1588,9 +1742,10 @@ function dossierBetrokkenen(d, session){
           </div>
         </div>
         ${b.signalement ? `<div class="muted verslag-tekst" style="font-size:12px;margin-top:8px">${renderOpgemaakteTekst(b.signalement)}</div>` : ""}
-        ${b.fotos ? `<div style="display:flex;gap:6px;margin-top:8px">${Array.from({length:b.fotos}).map(() => `<div class="photothumb" style="width:40px;height:40px">&#128247;</div>`).join("")}</div>` : ""}
+        ${fotosGalerijHtml(b.fotos)}
       </div>
     </div>`);
+    wireFotosGalerij(row);
     if (canEdit){
       row.querySelector(".edit-b").addEventListener("click", () => openBetrokkeneForm(d, b));
       row.querySelector(".del-b").addEventListener("click", () => {
@@ -1607,8 +1762,8 @@ function dossierBetrokkenen(d, session){
 
 function openBetrokkeneForm(d, betrokkene){
   const isNew = !betrokkene;
-  const b = betrokkene || { naam: "", detail: "", tag: "Verdachte", tagClass: "chip-wanted", signalement: "", fotos: 0 };
-  const state = { fotos: b.fotos || 0 };
+  const b = betrokkene || { naam: "", detail: "", tag: "Verdachte", tagClass: "chip-wanted", signalement: "", fotos: [] };
+  const state = { fotos: (b.fotos || []).slice() };
   const tagOptions = [
     { tag: "Verdachte", cls: "chip-wanted" },
     { tag: "Slachtoffer", cls: "chip-open" },
@@ -1632,18 +1787,7 @@ function openBetrokkeneForm(d, betrokkene){
       ${!isNew ? `<button class="btn btn-danger" id="delB">Verwijderen</button>` : ""}
     </div>
   `);
-  // Enkel het foto-widgetje her-rendert op elke klik (niet de hele modal), zodat de andere
-  // velden nooit hun invoer verliezen.
-  function renderBFotos(){
-    const fw = document.getElementById("bFotosWrap");
-    fw.innerHTML = `
-      ${Array.from({length:state.fotos}).map((_, fi) => `<div class="photothumb b-foto-del" data-fi="${fi}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-      <div class="photothumb" id="addBFotoBtn" title="Foto toevoegen">+</div>
-    `;
-    fw.querySelector("#addBFotoBtn").addEventListener("click", () => { state.fotos++; renderBFotos(); });
-    fw.querySelectorAll(".b-foto-del").forEach(t => t.addEventListener("click", () => { state.fotos = Math.max(0, state.fotos - 1); renderBFotos(); }));
-  }
-  renderBFotos();
+  maakFotoWidget(document.getElementById("bFotosWrap"), state.fotos, getSession());
   document.getElementById("mClose").addEventListener("click", closeModal);
   maakOpmaakToolbar(document.getElementById("fSignalement"));
   document.getElementById("saveB").addEventListener("click", () => {
@@ -1689,9 +1833,10 @@ function dossierVoertuigen(d, session){
           </div>
         </div>
         ${v.notities ? `<div class="muted verslag-tekst" style="font-size:12px;margin-top:8px">${renderOpgemaakteTekst(v.notities)}</div>` : ""}
-        ${v.fotos ? `<div style="display:flex;gap:6px;margin-top:8px">${Array.from({length:v.fotos}).map(() => `<div class="photothumb" style="width:40px;height:40px">&#128247;</div>`).join("")}</div>` : ""}
+        ${fotosGalerijHtml(v.fotos)}
       </div>
     </div>`);
+    wireFotosGalerij(row);
     if (canEdit){
       row.querySelector(".edit-v").addEventListener("click", () => openVoertuigForm(d, v));
       row.querySelector(".del-v").addEventListener("click", () => {
@@ -1708,8 +1853,8 @@ function dossierVoertuigen(d, session){
 
 function openVoertuigForm(d, voertuig){
   const isNew = !voertuig;
-  const v = voertuig || { kenteken: "", merkModel: "", kleur: "", betrokkeneNaam: "", notities: "", fotos: 0 };
-  const state = { fotos: v.fotos || 0 };
+  const v = voertuig || { kenteken: "", merkModel: "", kleur: "", betrokkeneNaam: "", notities: "", fotos: [] };
+  const state = { fotos: (v.fotos || []).slice() };
   const betrokkeneOpties = d.betrokkenen.map(b => b.naam);
   openModal(`
     <div class="modal-head"><h2>${isNew ? "Voertuig toevoegen" : "Voertuig bewerken"}</h2><button class="modal-close" id="mClose">&times;</button></div>
@@ -1733,16 +1878,7 @@ function openVoertuigForm(d, voertuig){
       ${!isNew ? `<button class="btn btn-danger" id="delV">Verwijderen</button>` : ""}
     </div>
   `);
-  function renderVFotos(){
-    const fw = document.getElementById("vFotosWrap");
-    fw.innerHTML = `
-      ${Array.from({length:state.fotos}).map((_, fi) => `<div class="photothumb v-foto-del" data-fi="${fi}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-      <div class="photothumb" id="addVFotoBtn" title="Foto toevoegen">+</div>
-    `;
-    fw.querySelector("#addVFotoBtn").addEventListener("click", () => { state.fotos++; renderVFotos(); });
-    fw.querySelectorAll(".v-foto-del").forEach(t => t.addEventListener("click", () => { state.fotos = Math.max(0, state.fotos - 1); renderVFotos(); }));
-  }
-  renderVFotos();
+  maakFotoWidget(document.getElementById("vFotosWrap"), state.fotos, getSession());
   document.getElementById("mClose").addEventListener("click", closeModal);
   maakOpmaakToolbar(document.getElementById("fNotities"));
   document.getElementById("saveV").addEventListener("click", () => {
@@ -1811,7 +1947,7 @@ function openDocDetail(doc, dossierObj, session){
           <tbody>${doc.rows.map(r => `<tr><td style="font-weight:600;width:40%">${r.label}</td><td>${r.waarde}</td></tr>`).join("")}</tbody>
         </table>
       </div>` : "";
-    const fotosHtml = (doc.foto_s ? `<div style="display:flex;gap:8px;margin-top:14px">${Array.from({length:doc.foto_s}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : "");
+    const fotosHtml = fotosGalerijHtml(doc.foto_s, "margin-top:14px");
     openModal(`
       <div class="modal-head"><h2>${doc.type}</h2><button class="modal-close" id="mClose">&times;</button></div>
       <div class="pv-doc">
@@ -1834,6 +1970,7 @@ function openDocDetail(doc, dossierObj, session){
       </div>
       ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
     `, true);
+    wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
@@ -1855,8 +1992,8 @@ function openDocDetail(doc, dossierObj, session){
       <div class="pv-loc">
         <div class="lbl">Locatie ${i + 1} &middot; postcode ${l.postcode}</div>
         <div style="font-size:11px;color:#8a90a3;margin-bottom:10px">${l.datum} &middot; ${l.tijd}</div>
-        <div class="verslag-tekst" style="margin-bottom:${l.foto_s ? "12px" : "0"}">${renderOpgemaakteTekst(l.tekst)}</div>
-        ${l.foto_s ? `<div style="display:flex;gap:8px">${Array.from({length:l.foto_s||0}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : ""}
+        <div class="verslag-tekst" style="margin-bottom:${(l.foto_s && l.foto_s.length) ? "12px" : "0"}">${renderOpgemaakteTekst(l.tekst)}</div>
+        ${fotosGalerijHtml(l.foto_s, "")}
       </div>`).join("");
     openModal(`
       <div class="modal-head"><h2>${doc.type}</h2><button class="modal-close" id="mClose">&times;</button></div>
@@ -1871,6 +2008,7 @@ function openDocDetail(doc, dossierObj, session){
       </div>
       ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
     `, true);
+    wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
@@ -1893,7 +2031,7 @@ function openDocDetail(doc, dossierObj, session){
       if (s.kop) lblDelen.push(s.kop);
       if (s.postcode) lblDelen.push("postcode " + s.postcode);
       const lbl = lblDelen.join(" &middot; ");
-      const fotosHtml = s.fotos ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">${Array.from({length:s.fotos}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : "";
+      const fotosHtml = fotosGalerijHtml(s.fotos, "margin-top:10px");
       return `
       <div class="pv-loc">
         ${lbl ? `<div class="lbl">${lbl}</div>` : ""}
@@ -1918,6 +2056,7 @@ function openDocDetail(doc, dossierObj, session){
       </div>
       ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
     `, true);
+    wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
@@ -1935,7 +2074,7 @@ function openDocDetail(doc, dossierObj, session){
   if (doc.type === "Verhoor-verslag"){
     const secties = doc.secties && doc.secties.length ? doc.secties : [];
     const sectiesHtml = secties.map(s => {
-      const fotosHtml = s.fotos ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">${Array.from({length:s.fotos}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : "";
+      const fotosHtml = fotosGalerijHtml(s.fotos, "margin-top:10px");
       return `
       <div class="pv-loc">
         ${s.kop ? `<div class="lbl">${s.kop}</div>` : ""}
@@ -1964,6 +2103,7 @@ function openDocDetail(doc, dossierObj, session){
       </div>
       ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
     `, true);
+    wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
@@ -2000,7 +2140,7 @@ function openDocDetail(doc, dossierObj, session){
             </div>` : ""}
           </div>
           <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
-          ${a.foto_s ? `<div style="display:flex;gap:8px;margin-top:10px">${Array.from({length:a.foto_s}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : ""}
+          ${fotosGalerijHtml(a.foto_s, "margin-top:10px")}
         </div>`).join("")}
     ` : "";
     const linkLine = doc.externLink ? `<div style="margin-top:16px"><a href="${doc.externLink}" target="_blank" rel="noopener">Externe link &rarr;</a></div>` : "";
@@ -2029,6 +2169,7 @@ function openDocDetail(doc, dossierObj, session){
         ${canEdit ? `<button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button>` : ""}
       </div>
     `, true);
+    wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
     if (doc.type === "Bijstandsaanvraag"){
       document.getElementById("exportDocBtn").addEventListener("click", () => exporteerDocumentAlsPdf(doc, dossierObj));
@@ -2154,7 +2295,7 @@ function docExportHtml(doc, dossierObj){
       if (s.kop) lblDelen.push(s.kop);
       if (s.postcode) lblDelen.push("postcode " + s.postcode);
       const lbl = lblDelen.join(" &middot; ");
-      const fotosHtml = s.fotos ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">${Array.from({length:s.fotos}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : "";
+      const fotosHtml = fotosGalerijHtml(s.fotos, "margin-top:10px");
       return `
       <div class="pv-loc">
         ${lbl ? `<div class="lbl">${lbl}</div>` : ""}
@@ -2193,7 +2334,7 @@ function docExportHtml(doc, dossierObj){
         <div class="pv-loc">
           <div style="font-size:11px;color:#8a90a3;margin-bottom:6px">${a.datum} &middot; ${a.tijd || ""} ${a.auteur ? "&middot; " + a.auteur : ""}</div>
           <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
-          ${a.foto_s ? `<div style="display:flex;gap:8px;margin-top:10px">${Array.from({length:a.foto_s}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : ""}
+          ${fotosGalerijHtml(a.foto_s, "margin-top:10px")}
         </div>`).join("")}
     ` : "";
     const linkLine = doc.externLink ? `<div style="margin-top:16px"><a href="${doc.externLink}" target="_blank" rel="noopener">Externe link &rarr;</a></div>` : "";
@@ -2218,7 +2359,7 @@ function docExportHtml(doc, dossierObj){
   if (doc.type === "Verhoor-verslag"){
     const secties = doc.secties && doc.secties.length ? doc.secties : [];
     const sectiesHtml = secties.map(s => {
-      const fotosHtml = s.fotos ? `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">${Array.from({length:s.fotos}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : "";
+      const fotosHtml = fotosGalerijHtml(s.fotos, "margin-top:10px");
       return `
       <div class="pv-loc">
         ${s.kop ? `<div class="lbl">${s.kop}</div>` : ""}
@@ -2484,8 +2625,8 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
   // onderzoeksrechter en heeft geen eigen locatie).
   const toontPostcode = type === "Melding" || type === "Algemeen verslag" || type === "Bijkomende informatie";
   const bestaandeSecties = existingDoc && existingDoc.secties && existingDoc.secties.length
-    ? existingDoc.secties.map(s => ({ kop: s.kop || "", tekst: s.tekst || "", postcode: s.postcode || "", fotos: s.fotos || 0 }))
-    : [{ kop: "", tekst: (existingDoc && existingDoc.inhoud) || "", postcode: "", fotos: 0 }];
+    ? existingDoc.secties.map(s => ({ kop: s.kop || "", tekst: s.tekst || "", postcode: s.postcode || "", fotos: (s.fotos || []).slice() }))
+    : [{ kop: "", tekst: (existingDoc && existingDoc.inhoud) || "", postcode: "", fotos: [] }];
   const state = {
     auteur: (existingDoc && existingDoc.auteur) || session.naam,
     datum: (existingDoc && existingDoc.datum) || "",
@@ -2516,10 +2657,7 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
         <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:vertical">${s.tekst}</textarea></div>
         ${toontPostcode ? `
         <div class="field"><label>Foto's (optioneel)</label>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            ${Array.from({length:s.fotos}).map((_, fi) => `<div class="photothumb sec-foto-del" data-i="${i}" data-fi="${fi}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-            <div class="photothumb sec-addfoto" data-i="${i}" title="Foto toevoegen">+</div>
-          </div>
+          <div class="sec-fotos-wrap" data-i="${i}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
         </div>` : ""}
       </div>
     `).join("");
@@ -2555,10 +2693,9 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".sec-postcode").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].postcode = e.target.value; }));
     modalBody.querySelectorAll(".sec-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].tekst = e.target.value; }));
     wireOpmaakToolbars(modalBody, ".sec-tekst");
-    modalBody.querySelectorAll(".sec-addfoto").forEach(btn => btn.addEventListener("click", () => { const i = +btn.dataset.i; state.secties[i].fotos = (state.secties[i].fotos || 0) + 1; render_(); }));
-    modalBody.querySelectorAll(".sec-foto-del").forEach(thumb => thumb.addEventListener("click", () => { const i = +thumb.dataset.i; state.secties[i].fotos = Math.max(0, (state.secties[i].fotos || 0) - 1); render_(); }));
+    modalBody.querySelectorAll(".sec-fotos-wrap").forEach(wrap => { if (!state.secties[+wrap.dataset.i].fotos) state.secties[+wrap.dataset.i].fotos = []; maakFotoWidget(wrap, state.secties[+wrap.dataset.i].fotos, session); });
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.secties.splice(+btn.dataset.i, 1); render_(); }));
-    modalBody.querySelector("#addSecBtn").addEventListener("click", () => { state.secties.push({ kop: "", tekst: "", postcode: "", fotos: 0 }); render_(); });
+    modalBody.querySelector("#addSecBtn").addEventListener("click", () => { state.secties.push({ kop: "", tekst: "", postcode: "", fotos: [] }); render_(); });
     modalBody.querySelector("#saveSimpleDoc").addEventListener("click", () => {
       // Bij een Opdracht is er geen "opgesteld door": die komt van de PDK/onderzoeksrechter zelf,
       // niet van het lid dat ze hier invoert &mdash; dus geen auteur-veld en geen auteur opslaan.
@@ -2567,16 +2704,16 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
       const tijd = state.tijd.trim();
       const titel = state.titel.trim();
       const afkomstigVan = type === "Opdracht" ? state.afkomstigVan : undefined;
-      const secties = state.secties.map(s => ({ kop: s.kop.trim(), tekst: s.tekst.trim(), postcode: (s.postcode || "").trim(), fotos: s.fotos || 0 })).filter(s => s.kop || s.tekst || s.postcode || s.fotos);
+      const secties = state.secties.map(s => ({ kop: s.kop.trim(), tekst: s.tekst.trim(), postcode: (s.postcode || "").trim(), fotos: s.fotos || [] })).filter(s => s.kop || s.tekst || s.postcode || s.fotos.length);
       if (isEdit){
         existingDoc.auteur = auteur; existingDoc.datum = datum; existingDoc.tijd = tijd;
-        existingDoc.titel = titel; existingDoc.secties = secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: 0 }];
+        existingDoc.titel = titel; existingDoc.secties = secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }];
         existingDoc.aanwezigen = state.aanwezigen;
         delete existingDoc.inhoud;
         if (afkomstigVan !== undefined) existingDoc.afkomstigVan = afkomstigVan;
         logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
       } else {
-        const newDoc = { id: "d" + (db.nextDocId++), type, auteur, datum, tijd, titel, secties: secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: 0 }], aanwezigen: state.aanwezigen, gezienDoor: [session.id] };
+        const newDoc = { id: "d" + (db.nextDocId++), type, auteur, datum, tijd, titel, secties: secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }], aanwezigen: state.aanwezigen, gezienDoor: [session.id] };
         if (afkomstigVan !== undefined) newDoc.afkomstigVan = afkomstigVan;
         dossierObj.documenten.push(newDoc);
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
@@ -2599,12 +2736,12 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
   const state = isEdit
     ? {
         auteur: existingDoc.auteur,
-        locations: existingDoc.locaties.map(l => ({ datum: l.datum, tijd: l.tijd, postcode: l.postcode, tekst: l.tekst, photos: l.foto_s || 0 })),
+        locations: existingDoc.locaties.map(l => ({ datum: l.datum, tijd: l.tijd, postcode: l.postcode, tekst: l.tekst, photos: (l.foto_s || []).slice() })),
         aanwezigen: existingDoc.aanwezigen || []
       }
     : {
         auteur: session.naam,
-        locations: [ { datum: "", tijd: "", postcode: "", tekst: "", photos: 0 } ],
+        locations: [ { datum: "", tijd: "", postcode: "", tekst: "", photos: [] } ],
         aanwezigen: []
       };
 
@@ -2621,10 +2758,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
         <div class="field"><label>Postcode</label><input class="loc-postcode" data-i="${i}" value="${l.postcode}" placeholder="Bv. 2000"></div>
         <div class="field"><label>Vaststellingen</label><textarea class="loc-tekst" data-i="${i}" rows="3" style="resize:vertical">${l.tekst}</textarea></div>
         <div class="field"><label>Foto's van de ploeg</label>
-          <div style="display:flex;gap:8px;align-items:center">
-            ${Array.from({length:l.photos}).map(() => `<div class="photothumb">&#128247;</div>`).join("")}
-            <div class="photothumb loc-addphoto" data-i="${i}">+</div>
-          </div>
+          <div class="loc-fotos-wrap" data-i="${i}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
         </div>
       </div>
     `).join("");
@@ -2655,9 +2789,9 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".loc-postcode").forEach(inp => inp.addEventListener("input", (e) => { state.locations[+e.target.dataset.i].postcode = e.target.value; }));
     modalBody.querySelectorAll(".loc-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.locations[+e.target.dataset.i].tekst = e.target.value; }));
     wireOpmaakToolbars(modalBody, ".loc-tekst");
-    modalBody.querySelectorAll(".loc-addphoto").forEach(btn => btn.addEventListener("click", () => { state.locations[+btn.dataset.i].photos++; render_(); }));
+    modalBody.querySelectorAll(".loc-fotos-wrap").forEach(wrap => { const i = +wrap.dataset.i; if (!state.locations[i].photos) state.locations[i].photos = []; maakFotoWidget(wrap, state.locations[i].photos, session); });
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.locations.splice(+btn.dataset.i, 1); render_(); }));
-    modalBody.querySelector("#addLocBtn").addEventListener("click", () => { state.locations.push({ datum: "", tijd: "", postcode: "", tekst: "", photos: 0 }); render_(); });
+    modalBody.querySelector("#addLocBtn").addEventListener("click", () => { state.locations.push({ datum: "", tijd: "", postcode: "", tekst: "", photos: [] }); render_(); });
     modalBody.querySelector("#saveDocBtn").addEventListener("click", () => {
       const auteur = readAuteur(session);
       const first = state.locations[0] || {};
@@ -2716,7 +2850,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     bevindingen: existingDoc.bevindingen || "",
     tijdstippen: (existingDoc.tijdstippen && existingDoc.tijdstippen.length) ? existingDoc.tijdstippen.map(t => ({ label: t.label || "", tijd: t.tijd || "" })) : defaultTijdstippen.map(t => ({...t})),
     rows: (existingDoc.rows && existingDoc.rows.length) ? existingDoc.rows.map(r => ({ label: r.label || "", waarde: r.waarde || "" })) : [{ label: "", waarde: "" }],
-    foto_s: existingDoc.foto_s || 0,
+    foto_s: (existingDoc.foto_s || []).slice(),
     aanwezigen: existingDoc.aanwezigen || []
   } : {
     auteur: session.naam,
@@ -2725,7 +2859,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     bevindingen: "",
     tijdstippen: defaultTijdstippen.map(t => ({...t})),
     rows: [{ label: "", waarde: "" }],
-    foto_s: 0,
+    foto_s: [],
     aanwezigen: []
   };
 
@@ -2750,10 +2884,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     `).join("");
     const fotosHtml = isCSI ? `
       <div class="field"><label>Foto's van de tussenkomst</label>
-        <div style="display:flex;gap:8px;align-items:center">
-          ${Array.from({length:state.foto_s}).map(() => `<div class="photothumb">&#128247;</div>`).join("")}
-          <div class="photothumb" id="addFotoBtn">+</div>
-        </div>
+        <div id="tkFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
       </div>` : "";
 
     modalBody.innerHTML = `
@@ -2793,8 +2924,8 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".row-waarde").forEach(inp => inp.addEventListener("input", (e) => { state.rows[+e.target.dataset.i].waarde = e.target.value; }));
     modalBody.querySelectorAll(".row-remove").forEach(btn => btn.addEventListener("click", () => { state.rows.splice(+btn.dataset.i, 1); render_(); }));
     modalBody.querySelector("#addRowBtn").addEventListener("click", () => { state.rows.push({ label: "", waarde: "" }); render_(); });
-    const addFotoBtn = modalBody.querySelector("#addFotoBtn");
-    if (addFotoBtn) addFotoBtn.addEventListener("click", () => { state.foto_s++; render_(); });
+    const tkFotosWrap = modalBody.querySelector("#tkFotosWrap");
+    if (tkFotosWrap){ if (!state.foto_s) state.foto_s = []; maakFotoWidget(tkFotosWrap, state.foto_s, session); }
     modalBody.querySelector("#saveTussenkomst").addEventListener("click", () => {
       const auteur = readAuteur(session);
       const datum = state.datum.trim() || "&ndash;";
@@ -2845,8 +2976,8 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
 function openVerhoorForm(dossierObj, session, type, existingDoc){
   const isEdit = !!existingDoc;
   const bestaandeSecties = existingDoc && existingDoc.secties && existingDoc.secties.length
-    ? existingDoc.secties.map(s => ({ kop: s.kop || "", tekst: s.tekst || "", fotos: s.fotos || 0 }))
-    : [{ kop: "", tekst: "", fotos: 0 }];
+    ? existingDoc.secties.map(s => ({ kop: s.kop || "", tekst: s.tekst || "", fotos: (s.fotos || []).slice() }))
+    : [{ kop: "", tekst: "", fotos: [] }];
   const state = {
     auteur: (existingDoc && existingDoc.auteur) || session.naam,
     datum: (existingDoc && existingDoc.datum) || "",
@@ -2872,10 +3003,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
         <div class="field"><label>Kop (optioneel)</label><input class="sec-kop" data-i="${i}" value="${s.kop}" placeholder="Bv. Vraag 1, Verklaring over..."></div>
         <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:vertical">${s.tekst}</textarea></div>
         <div class="field"><label>Foto's (optioneel)</label>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            ${Array.from({length:s.fotos}).map((_, fi) => `<div class="photothumb sec-foto-del" data-i="${i}" data-fi="${fi}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-            <div class="photothumb sec-addfoto" data-i="${i}" title="Foto toevoegen">+</div>
-          </div>
+          <div class="sec-fotos-wrap" data-i="${i}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
         </div>
       </div>
     `).join("");
@@ -2934,10 +3062,9 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".sec-kop").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].kop = e.target.value; }));
     modalBody.querySelectorAll(".sec-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].tekst = e.target.value; }));
     wireOpmaakToolbars(modalBody, ".sec-tekst");
-    modalBody.querySelectorAll(".sec-addfoto").forEach(btn => btn.addEventListener("click", () => { const i = +btn.dataset.i; state.secties[i].fotos = (state.secties[i].fotos || 0) + 1; render_(); }));
-    modalBody.querySelectorAll(".sec-foto-del").forEach(thumb => thumb.addEventListener("click", () => { const i = +thumb.dataset.i; state.secties[i].fotos = Math.max(0, (state.secties[i].fotos || 0) - 1); render_(); }));
+    modalBody.querySelectorAll(".sec-fotos-wrap").forEach(wrap => { const i = +wrap.dataset.i; if (!state.secties[i].fotos) state.secties[i].fotos = []; maakFotoWidget(wrap, state.secties[i].fotos, session); });
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.secties.splice(+btn.dataset.i, 1); render_(); }));
-    modalBody.querySelector("#addSecBtn").addEventListener("click", () => { state.secties.push({ kop: "", tekst: "", fotos: 0 }); render_(); });
+    modalBody.querySelector("#addSecBtn").addEventListener("click", () => { state.secties.push({ kop: "", tekst: "", fotos: [] }); render_(); });
     modalBody.querySelector("#saveVerhoor").addEventListener("click", () => {
       const auteur = readAuteur(session);
       const datum = state.datum.trim() || "&ndash;";
@@ -2947,11 +3074,11 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
       const titel = state.titel.trim() || (ondervraagde ? `Verhoor &ndash; ${ondervraagde}` : "Verhoor-verslag");
       const cautieTijd = state.cautie ? state.cautieTijd.trim() : "";
       const advocaatNaam = state.advocaat ? state.advocaatNaam.trim() : "";
-      const secties = state.secties.map(s => ({ kop: s.kop.trim(), tekst: s.tekst.trim(), fotos: s.fotos || 0 })).filter(s => s.kop || s.tekst || s.fotos);
+      const secties = state.secties.map(s => ({ kop: s.kop.trim(), tekst: s.tekst.trim(), fotos: s.fotos || [] })).filter(s => s.kop || s.tekst || s.fotos.length);
       const payload = {
         auteur, datum, tijd, eindTijd, ondervraagde, hoedanigheid: state.hoedanigheid,
         cautie: state.cautie, cautieTijd, advocaat: state.advocaat, advocaatNaam, titel,
-        secties: secties.length ? secties : [{ kop: "", tekst: "", fotos: 0 }],
+        secties: secties.length ? secties : [{ kop: "", tekst: "", fotos: [] }],
         aanwezigen: state.aanwezigen
       };
       if (isEdit){
@@ -3009,9 +3136,9 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     inhoud: (existingDoc && existingDoc.inhoud) || "",
     reden: (existingDoc && existingDoc.reden) || "",
     verdachtenInfo: (existingDoc && existingDoc.verdachtenInfo) || (isBijstand && !isEdit ? verdachtenTemplate : ""),
-    verdachtenFotos: (existingDoc && existingDoc.verdachtenFotos) || 0,
+    verdachtenFotos: (existingDoc && existingDoc.verdachtenFotos || []).slice(),
     pand: (existingDoc && existingDoc.pand) || "",
-    pandFotos: (existingDoc && existingDoc.pandFotos) || 0,
+    pandFotos: (existingDoc && existingDoc.pandFotos || []).slice(),
     dossierbeheerders: (existingDoc && existingDoc.dossierbeheerders) || "",
     externLink: (existingDoc && existingDoc.externLink) || "",
     rows: (existingDoc && existingDoc.rows && existingDoc.rows.length && existingDoc.rows.map(r => ({ label: r.label, waarde: r.waarde }))) || defaultRows,
@@ -3045,17 +3172,11 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         <div class="field"><label>Reden / context &amp; omschrijving opdracht</label><textarea id="fReden" rows="4" style="resize:vertical" placeholder="Waarom is bijstand nodig, en wat wordt precies van de eenheid verwacht">${state.reden}</textarea></div>
         <div class="field"><label>Informatie verdachten</label><textarea id="fVerdachten" rows="5" style="resize:vertical">${state.verdachtenInfo}</textarea></div>
         <div class="field"><label>Foto's bij informatie verdachten (optioneel)</label>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            ${Array.from({length:state.verdachtenFotos}).map((_, i) => `<div class="photothumb verdachten-foto-del" data-i="${i}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-            <div class="photothumb" id="addVerdachtenFotoBtn" title="Foto toevoegen">+</div>
-          </div>
+          <div id="verdachtenFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
         </div>
         <div class="field"><label>Beschrijving van het pand</label><textarea id="fPand" rows="3" style="resize:vertical" placeholder="Indeling, toegangen, mogelijke vluchtwegen, ...">${state.pand}</textarea></div>
         <div class="field"><label>Foto's bij beschrijving van het pand (optioneel)</label>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            ${Array.from({length:state.pandFotos}).map((_, i) => `<div class="photothumb pand-foto-del" data-i="${i}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-            <div class="photothumb" id="addPandFotoBtn" title="Foto toevoegen">+</div>
-          </div>
+          <div id="pandFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
         </div>
         <div class="field"><label>Dossierbeheerder(s)</label><input id="fDossierbeheerders" value="${state.dossierbeheerders}" placeholder="Bv. Unemi, Jelle"></div>
       ` : ""}
@@ -3086,10 +3207,8 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     }));
     modalBody.querySelectorAll(".row-remove").forEach(btn => btn.addEventListener("click", () => { state.rows.splice(+btn.dataset.i, 1); render_(); }));
     modalBody.querySelector("#addRowBtn").addEventListener("click", () => { state.rows.push({ label: "", waarde: "" }); render_(); });
-    if (modalBody.querySelector("#addVerdachtenFotoBtn")) modalBody.querySelector("#addVerdachtenFotoBtn").addEventListener("click", () => { state.verdachtenFotos = (state.verdachtenFotos || 0) + 1; render_(); });
-    modalBody.querySelectorAll(".verdachten-foto-del").forEach(thumb => thumb.addEventListener("click", () => { state.verdachtenFotos = Math.max(0, state.verdachtenFotos - 1); render_(); }));
-    if (modalBody.querySelector("#addPandFotoBtn")) modalBody.querySelector("#addPandFotoBtn").addEventListener("click", () => { state.pandFotos = (state.pandFotos || 0) + 1; render_(); });
-    modalBody.querySelectorAll(".pand-foto-del").forEach(thumb => thumb.addEventListener("click", () => { state.pandFotos = Math.max(0, state.pandFotos - 1); render_(); }));
+    if (modalBody.querySelector("#verdachtenFotosWrap")){ if (!state.verdachtenFotos) state.verdachtenFotos = []; maakFotoWidget(modalBody.querySelector("#verdachtenFotosWrap"), state.verdachtenFotos, session); }
+    if (modalBody.querySelector("#pandFotosWrap")){ if (!state.pandFotos) state.pandFotos = []; maakFotoWidget(modalBody.querySelector("#pandFotosWrap"), state.pandFotos, session); }
     modalBody.querySelector("#saveResultatenBtn").addEventListener("click", () => {
       const auteur = readAuteur(session);
       const datum = modalBody.querySelector("#fDatum").value.trim() || "&ndash;";
@@ -3101,9 +3220,9 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
       const bijstandExtra = isBijstand ? {
         reden: modalBody.querySelector("#fReden").value.trim(),
         verdachtenInfo: modalBody.querySelector("#fVerdachten").value.trim(),
-        verdachtenFotos: state.verdachtenFotos || 0,
+        verdachtenFotos: state.verdachtenFotos || [],
         pand: modalBody.querySelector("#fPand").value.trim(),
-        pandFotos: state.pandFotos || 0,
+        pandFotos: state.pandFotos || [],
         dossierbeheerders: modalBody.querySelector("#fDossierbeheerders").value.trim()
       } : {};
       if (isEdit){
@@ -3142,7 +3261,7 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
     datum: (existingAanvulling && existingAanvulling.datum) || "",
     tijd: (existingAanvulling && existingAanvulling.tijd) || "",
     tekst: (existingAanvulling && existingAanvulling.tekst) || "",
-    foto_s: (existingAanvulling && existingAanvulling.foto_s) || 0
+    foto_s: (existingAanvulling && existingAanvulling.foto_s || []).slice()
   };
   function render_(){
     modalBody.innerHTML = `
@@ -3153,10 +3272,7 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
       </div>
       <div class="field"><label>Aanvullende informatie</label><textarea id="fATekst" rows="4" style="resize:vertical" placeholder="Bv. een statusupdate of nieuwe informatie bij dit document"></textarea></div>
       <div class="field"><label>Foto's (optioneel)</label>
-        <div style="display:flex;gap:8px;align-items:center">
-          ${Array.from({length:state.foto_s}).map((_, i) => `<div class="photothumb aanv-foto-del" data-i="${i}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
-          <div class="photothumb" id="addFotoBtn" title="Foto toevoegen">+</div>
-        </div>
+        <div id="aanvFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
       </div>
       <button class="btn btn-gold" id="saveAanvulling" style="width:100%;justify-content:center;margin-top:10px">${isEdit ? "Wijzigingen opslaan" : "Toevoegen"}</button>
     `;
@@ -3170,8 +3286,8 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
     fATijd.addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; });
     fATekst.addEventListener("input", (e) => { state.tekst = e.target.value; });
     maakOpmaakToolbar(fATekst);
-    modalBody.querySelector("#addFotoBtn").addEventListener("click", () => { state.foto_s++; render_(); });
-    modalBody.querySelectorAll(".aanv-foto-del").forEach(thumb => thumb.addEventListener("click", () => { state.foto_s = Math.max(0, state.foto_s - 1); render_(); }));
+    if (!state.foto_s) state.foto_s = [];
+    maakFotoWidget(modalBody.querySelector("#aanvFotosWrap"), state.foto_s, session);
     modalBody.querySelector("#saveAanvulling").addEventListener("click", () => {
     const datum = (modalBody.querySelector("#fADatum").value || "").trim() || "&ndash;";
     const tijd = (modalBody.querySelector("#fATijd").value || "").trim();
