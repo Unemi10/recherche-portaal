@@ -479,8 +479,8 @@ function naamMetCallsign(m){
 }
 // Weergave van een lid-rol (ook "Rechercheur in opleiding") en de bijhorende chipkleur, en
 // hetzelfde voor de ledenstatus &mdash; gedeeld tussen de publieke Ledenlijst en Ledenbeheer.
-const ROL_LABEL = { leiding: "Leiding", opleiding: "Rechercheur in opleiding", lid: "Rechercheur" };
-const ROL_CHIP_CLASS = { leiding: "chip-gold", opleiding: "chip-pending", lid: "chip-muted-light" };
+const ROL_LABEL = { leiding: "Leiding", opleiding: "Rechercheur in opleiding", lid: "Rechercheur", hoofdrechercheur: "Hoofdrechercheur" };
+const ROL_CHIP_CLASS = { leiding: "chip-gold", opleiding: "chip-pending", lid: "chip-bronze", hoofdrechercheur: "chip-silver" };
 function rolLabel(rol){ return ROL_LABEL[rol] || "Rechercheur"; }
 function rolChipClass(rol){ return ROL_CHIP_CLASS[rol] || "chip-muted-light"; }
 const STATUS_CHIP_CLASS = { "Actief": "chip-status-open", "Inactief": "chip-inactief", "Verlof": "chip-open" };
@@ -2321,6 +2321,7 @@ const VERSLAG_DOC_TYPES = ["OBN-verslag", "CSI-verslag", "GO-verslag"];
 function getAvailableDocTypes(session){
   const admin = isAdmin(session);
   const leiding = session.rol === "leiding";
+  const hoofdrechercheur = session.rol === "hoofdrechercheur";
   const specs = session.specialisaties || [];
   return [
     { type: "Melding", kind: "simple", label: "Melding", visible: admin || leiding },
@@ -2333,7 +2334,7 @@ function getAvailableDocTypes(session){
     { type: "Verhoor-verslag", kind: "verhoor", label: "Verhoor-verslag", visible: true },
     { type: "Beschikbare resultaten", kind: "resultaten", label: "Beschikbare resultaten", visible: admin },
     { type: "TAP-dossier", kind: "resultaten", label: "TAP-dossier", visible: admin },
-    { type: "Bijstandsaanvraag", kind: "resultaten", label: "Bijstandsaanvraag", visible: admin || leiding }
+    { type: "Bijstandsaanvraag", kind: "resultaten", label: "Bijstandsaanvraag", visible: admin || leiding || hoofdrechercheur }
   ].filter(x => x.visible);
 }
 
@@ -3247,6 +3248,7 @@ function openMemberForm(member, viewerSession){
       <select id="fRol" ${!viewerIsAdmin ? "disabled style=\"opacity:.55;cursor:not-allowed\"" : ""}>
         <option value="opleiding" ${m.rol === "opleiding" ? "selected" : ""}>Rechercheur in opleiding</option>
         <option value="lid" ${m.rol === "lid" ? "selected" : ""}>Rechercheur</option>
+        <option value="hoofdrechercheur" ${m.rol === "hoofdrechercheur" ? "selected" : ""}>Hoofdrechercheur</option>
         ${viewerIsAdmin ? `<option value="leiding" ${m.rol === "leiding" ? "selected" : ""}>Leiding</option>` : ""}
       </select>
       ${!viewerIsAdmin ? `<div class="hint" style="margin-top:6px">Enkel admin kan iemand leiding maken.</div>` : ""}
