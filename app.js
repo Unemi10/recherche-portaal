@@ -476,6 +476,100 @@ function sortBetrokkenen(list){
     return diff !== 0 ? diff : a.i - b.i;
   }).map(e => e.x);
 }
+// ============================================================
+// Lichte tekstopmaak voor verslag-tekstvakken (secties, bevindingen, notities, enz.).
+// Opslag blijft gewone platte tekst met simpele markeringen (**vet**, _cursief_, ++onderlijnd++,
+// "- " voor een opsomming) zodat de data eenvoudig en leesbaar blijft in Firestore. Weergave
+// gebeurt altijd via renderOpgemaakteTekst(), die eerst HTML escaped (veiligheid tegen
+// ingetypte tags) en pas daarna de markeringen omzet &mdash; ingetypte HTML verschijnt dus
+// gewoon als platte tekst, nooit als actieve opmaak.
+// ============================================================
+function escapeHtml(str){
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+function renderOpgemaakteTekst(tekst){
+  if (!tekst) return "";
+  const inline = (line) => escapeHtml(line)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\+\+(.+?)\+\+/g, "<u>$1</u>")
+    .replace(/_(.+?)_/g, "<em>$1</em>");
+  const regels = String(tekst).split("\n");
+  const blokken = [];
+  regels.forEach(regel => {
+    const m = /^\s*-\s+(.*)$/.exec(regel);
+    if (m){
+      const laatste = blokken[blokken.length - 1];
+      if (laatste && laatste.type === "lijst") laatste.items.push(m[1]);
+      else blokken.push({ type: "lijst", items: [m[1]] });
+    } else {
+      blokken.push({ type: "regel", tekst: regel });
+    }
+  });
+  const html = blokken.map(b => b.type === "lijst"
+    ? `<ul>${b.items.map(i => `<li>${inline(i)}</li>`).join("")}</ul>`
+    : inline(b.tekst) + "<br>"
+  ).join("");
+  return html.replace(/<br>$/, "");
+}
+// Voegt een balkje met opmaakknoppen toe vlak voor de meegegeven textarea. Werkt op de
+// tekstselectie van de gebruiker (of voegt markeringen rond de cursor in als er niets
+// geselecteerd is) en stuurt daarna een "input"-event, zodat de bestaande input-listener
+// op de textarea de state gewoon bijwerkt &mdash; geen aparte opslaglogica nodig per aanroepplaats.
+function maakOpmaakToolbar(textarea){
+  const bar = document.createElement("div");
+  bar.className = "opmaak-toolbar";
+  const knoppen = [
+    { html: "<b>V</b>", titel: "Vet", before: "**", after: "**" },
+    { html: "<i>I</i>", titel: "Cursief", before: "_", after: "_" },
+    { html: "<u>O</u>", titel: "Onderlijnd", before: "++", after: "++" },
+    { html: "&bull;", titel: "Opsomming", lijst: true }
+  ];
+  knoppen.forEach(k => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "opmaak-btn";
+    btn.title = k.titel;
+    btn.innerHTML = k.html;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      textarea.focus();
+      const start = textarea.selectionStart, end = textarea.selectionEnd;
+      const waarde = textarea.value;
+      if (k.lijst){
+        const voorRegelStart = waarde.lastIndexOf("\n", start - 1) + 1;
+        let naRegelEnd = waarde.indexOf("\n", end);
+        if (naRegelEnd === -1) naRegelEnd = waarde.length;
+        const blok = waarde.slice(voorRegelStart, naRegelEnd);
+        const nieuwBlok = blok.split("\n").map(r => /^\s*-\s+/.test(r) ? r : (r ? "- " + r : r)).join("\n");
+        textarea.value = waarde.slice(0, voorRegelStart) + nieuwBlok + waarde.slice(naRegelEnd);
+        textarea.selectionStart = voorRegelStart;
+        textarea.selectionEnd = voorRegelStart + nieuwBlok.length;
+      } else {
+        const selectie = waarde.slice(start, end) || "tekst";
+        const vervanging = k.before + selectie + k.after;
+        textarea.value = waarde.slice(0, start) + vervanging + waarde.slice(end);
+        textarea.selectionStart = start + k.before.length;
+        textarea.selectionEnd = start + k.before.length + selectie.length;
+      }
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    bar.appendChild(btn);
+  });
+  textarea.parentNode.insertBefore(bar, textarea);
+  return bar;
+}
+// Hangt een opmaakbalkje boven elke textarea met de opgegeven CSS-klasse binnen "container".
+// Wordt na elke render_() van een formulier aangeroepen (net als de andere wireEvents-stappen).
+function wireOpmaakToolbars(container, selector){
+  container.querySelectorAll(selector).forEach(ta => {
+    if (ta.dataset.opmaakGewired) return;
+    ta.dataset.opmaakGewired = "1";
+    maakOpmaakToolbar(ta);
+  });
+}
 function memberName(id){ const m = db.members.find(x => x.id === id); return m ? m.naam : "?"; }
 // Naam van een lid met de callsign ervoor (bv. "COBRA-3 | Unemi"), zoals in de ledenlijst en
 // het ledenbeheer getoond wordt; zonder callsign gewoon de naam.
@@ -1150,7 +1244,7 @@ function dossierOverzichtTijdlijn(d, session){
       <div><div class="hint" style="text-transform:uppercase;font-weight:700">Verantwoordelijke</div><div style="margin-top:4px">${d.verantwoordelijke}</div></div>
       <div><div class="hint" style="text-transform:uppercase;font-weight:700">Datum geopend</div><div style="margin-top:4px">${d.datumGeopend}</div></div>
     </div>
-    <div class="card" style="margin-bottom:20px"><div class="section-title">Samenvatting</div><div class="muted" style="font-size:13px;line-height:1.6">${d.samenvatting}</div></div>
+    <div class="card" style="margin-bottom:20px"><div class="section-title">Samenvatting</div><div class="muted verslag-tekst">${renderOpgemaakteTekst(d.samenvatting)}</div></div>
     <div id="actiesEmbed"></div>
     <div style="display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap">
       <div style="flex:2;min-width:300px">
@@ -1289,7 +1383,7 @@ function openOverzichtForm(d){
     </div>
     <div class="field"><label>Verantwoordelijke</label><input id="fVerantw" value="${obj.verantwoordelijke}"></div>
     <div class="field"><label>Datum geopend</label><input class="mono" id="fDatum" value="${obj.datumGeopend}" placeholder="DD/MM/JJJJ" maxlength="10"></div>
-    <div class="field"><label>Samenvatting</label><textarea id="fSamenv" rows="4" style="resize:none">${obj.samenvatting}</textarea></div>
+    <div class="field"><label>Samenvatting</label><textarea id="fSamenv" rows="4" style="resize:vertical">${obj.samenvatting}</textarea></div>
     <div class="field">
       <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fOpsporing" ${obj.opsporing ? "checked" : ""}> Actieve opsporing &mdash; dossier krijgt een OPSPORING-badge en staat bovenaan de lijst</label>
     </div>
@@ -1300,6 +1394,7 @@ function openOverzichtForm(d){
   `);
   document.getElementById("mClose").addEventListener("click", closeModal);
   document.getElementById("fDatum").addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); });
+  maakOpmaakToolbar(document.getElementById("fSamenv"));
   document.getElementById("saveOverzicht").addEventListener("click", () => {
     const naam = document.getElementById("fNaam").value.trim();
     if (!naam) return;
@@ -1369,7 +1464,7 @@ function bijstandExtraHtml(doc){
   const blok = (label, tekst, fotoCount) => (tekst || fotoCount) ? `
     <div class="pv-loc">
       <div class="lbl">${label}</div>
-      ${tekst ? `<div style="font-size:13px;line-height:1.7;white-space:pre-wrap;margin-top:8px">${tekst}</div>` : ""}
+      ${tekst ? `<div class="verslag-tekst" style="margin-top:8px">${renderOpgemaakteTekst(tekst)}</div>` : ""}
       ${fotosHtml(fotoCount)}
     </div>` : "";
   return [
@@ -1492,7 +1587,7 @@ function dossierBetrokkenen(d, session){
             ${canEdit ? `<button class="btn btn-ghost btn-sm edit-b">Bewerken</button><button class="btn btn-danger btn-sm del-b">Verwijderen</button>` : ""}
           </div>
         </div>
-        ${b.signalement ? `<div class="muted" style="font-size:12px;line-height:1.5;margin-top:8px;white-space:pre-wrap">${b.signalement}</div>` : ""}
+        ${b.signalement ? `<div class="muted verslag-tekst" style="font-size:12px;margin-top:8px">${renderOpgemaakteTekst(b.signalement)}</div>` : ""}
         ${b.fotos ? `<div style="display:flex;gap:6px;margin-top:8px">${Array.from({length:b.fotos}).map(() => `<div class="photothumb" style="width:40px;height:40px">&#128247;</div>`).join("")}</div>` : ""}
       </div>
     </div>`);
@@ -1528,7 +1623,7 @@ function openBetrokkeneForm(d, betrokkene){
     <div class="field"><label>Tag</label>
       <select id="fTag">${tagOptions.map(o => `<option value="${o.tag}|${o.cls}" ${b.tag === o.tag ? "selected" : ""}>${o.tag}</option>`).join("")}</select>
     </div>
-    <div class="field"><label>Signalement / extra informatie</label><textarea id="fSignalement" rows="3" style="resize:none" placeholder="Bv. lengte, bouw, kenmerken, laatst gezien...">${b.signalement || ""}</textarea></div>
+    <div class="field"><label>Signalement / extra informatie</label><textarea id="fSignalement" rows="3" style="resize:vertical" placeholder="Bv. lengte, bouw, kenmerken, laatst gezien...">${b.signalement || ""}</textarea></div>
     <div class="field"><label>Foto's (optioneel)</label>
       <div id="bFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
     </div>
@@ -1550,6 +1645,7 @@ function openBetrokkeneForm(d, betrokkene){
   }
   renderBFotos();
   document.getElementById("mClose").addEventListener("click", closeModal);
+  maakOpmaakToolbar(document.getElementById("fSignalement"));
   document.getElementById("saveB").addEventListener("click", () => {
     const naam = document.getElementById("fNaam").value.trim();
     const detail = document.getElementById("fDetail").value.trim();
@@ -1592,7 +1688,7 @@ function dossierVoertuigen(d, session){
             ${canEdit ? `<button class="btn btn-ghost btn-sm edit-v">Bewerken</button><button class="btn btn-danger btn-sm del-v">Verwijderen</button>` : ""}
           </div>
         </div>
-        ${v.notities ? `<div class="muted" style="font-size:12px;line-height:1.5;margin-top:8px;white-space:pre-wrap">${v.notities}</div>` : ""}
+        ${v.notities ? `<div class="muted verslag-tekst" style="font-size:12px;margin-top:8px">${renderOpgemaakteTekst(v.notities)}</div>` : ""}
         ${v.fotos ? `<div style="display:flex;gap:6px;margin-top:8px">${Array.from({length:v.fotos}).map(() => `<div class="photothumb" style="width:40px;height:40px">&#128247;</div>`).join("")}</div>` : ""}
       </div>
     </div>`);
@@ -1628,7 +1724,7 @@ function openVoertuigForm(d, voertuig){
         ${betrokkeneOpties.map(n => `<option value="${n}" ${v.betrokkeneNaam === n ? "selected" : ""}>${n}</option>`).join("")}
       </select>
     </div>
-    <div class="field"><label>Notities (optioneel)</label><textarea id="fNotities" rows="3" style="resize:none" placeholder="Bv. waar/wanneer gezien, bijzonderheden...">${v.notities || ""}</textarea></div>
+    <div class="field"><label>Notities (optioneel)</label><textarea id="fNotities" rows="3" style="resize:vertical" placeholder="Bv. waar/wanneer gezien, bijzonderheden...">${v.notities || ""}</textarea></div>
     <div class="field"><label>Foto's (optioneel)</label>
       <div id="vFotosWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
     </div>
@@ -1648,6 +1744,7 @@ function openVoertuigForm(d, voertuig){
   }
   renderVFotos();
   document.getElementById("mClose").addEventListener("click", closeModal);
+  maakOpmaakToolbar(document.getElementById("fNotities"));
   document.getElementById("saveV").addEventListener("click", () => {
     const kenteken = document.getElementById("fKenteken").value.trim();
     const merkModel = document.getElementById("fMerkModel").value.trim();
@@ -1730,7 +1827,7 @@ function openDocDetail(doc, dossierObj, session){
             <div class="lbl">Tijdstippen</div>
             <div style="margin-top:8px">${tijHtml || `<span class="muted" style="font-size:12px">Geen tijdstippen genoteerd.</span>`}</div>
           </div>
-          ${doc.bevindingen ? `<div class="pv-loc"><div class="lbl">Bevindingen</div><div style="font-size:13px;line-height:1.7;white-space:pre-wrap;margin-top:8px">${doc.bevindingen}</div></div>` : ""}
+          ${doc.bevindingen ? `<div class="pv-loc"><div class="lbl">Bevindingen</div><div class="verslag-tekst" style="margin-top:8px">${renderOpgemaakteTekst(doc.bevindingen)}</div></div>` : ""}
           ${rowsHtml}
           ${fotosHtml}
         </div>
@@ -1758,7 +1855,7 @@ function openDocDetail(doc, dossierObj, session){
       <div class="pv-loc">
         <div class="lbl">Locatie ${i + 1} &middot; postcode ${l.postcode}</div>
         <div style="font-size:11px;color:#8a90a3;margin-bottom:10px">${l.datum} &middot; ${l.tijd}</div>
-        <div style="font-size:13px;line-height:1.7;margin-bottom:${l.foto_s ? "12px" : "0"}">${l.tekst}</div>
+        <div class="verslag-tekst" style="margin-bottom:${l.foto_s ? "12px" : "0"}">${renderOpgemaakteTekst(l.tekst)}</div>
         ${l.foto_s ? `<div style="display:flex;gap:8px">${Array.from({length:l.foto_s||0}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : ""}
       </div>`).join("");
     openModal(`
@@ -1800,7 +1897,7 @@ function openDocDetail(doc, dossierObj, session){
       return `
       <div class="pv-loc">
         ${lbl ? `<div class="lbl">${lbl}</div>` : ""}
-        <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;${lbl ? "margin-top:8px" : ""}">${s.tekst}</div>
+        <div class="verslag-tekst" style="${lbl ? "margin-top:8px" : ""}">${renderOpgemaakteTekst(s.tekst)}</div>
         ${fotosHtml}
       </div>`;
     }).join("");
@@ -1842,7 +1939,7 @@ function openDocDetail(doc, dossierObj, session){
       return `
       <div class="pv-loc">
         ${s.kop ? `<div class="lbl">${s.kop}</div>` : ""}
-        <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;${s.kop ? "margin-top:8px" : ""}">${s.tekst}</div>
+        <div class="verslag-tekst" style="${s.kop ? "margin-top:8px" : ""}">${renderOpgemaakteTekst(s.tekst)}</div>
         ${fotosHtml}
       </div>`;
     }).join("");
@@ -1902,7 +1999,7 @@ function openDocDetail(doc, dossierObj, session){
               <span class="aanv-del" data-i="${i}" style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600">Verwijderen</span>
             </div>` : ""}
           </div>
-          <div style="font-size:13px;line-height:1.6;white-space:pre-wrap">${a.tekst}</div>
+          <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
           ${a.foto_s ? `<div style="display:flex;gap:8px;margin-top:10px">${Array.from({length:a.foto_s}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : ""}
         </div>`).join("")}
     ` : "";
@@ -1918,7 +2015,7 @@ function openDocDetail(doc, dossierObj, session){
         </div>
         <div class="pv-body">
           ${doc.titel ? `<div style="font-size:14px;font-weight:700;margin-bottom:10px">${doc.titel}</div>` : ""}
-          ${doc.inhoud ? `<div style="font-size:13px;line-height:1.7;white-space:pre-wrap;margin-bottom:${rows.length || aanvullingen.length ? "14px" : "0"}">${doc.inhoud}</div>` : ""}
+          ${doc.inhoud ? `<div class="verslag-tekst" style="margin-bottom:${rows.length || aanvullingen.length ? "14px" : "0"}">${renderOpgemaakteTekst(doc.inhoud)}</div>` : ""}
           ${tableHtml}
           ${bijstandExtraHtml(doc)}
           ${aanvullingenHtml}
@@ -2025,7 +2122,7 @@ function docExportHtml(doc, dossierObj){
             <div class="lbl">Tijdstippen</div>
             <div style="margin-top:8px">${tijHtml || `<span class="muted" style="font-size:12px">Geen tijdstippen genoteerd.</span>`}</div>
           </div>
-          ${doc.bevindingen ? `<div class="pv-loc"><div class="lbl">Bevindingen</div><div style="font-size:13px;line-height:1.7;white-space:pre-wrap;margin-top:8px">${doc.bevindingen}</div></div>` : ""}
+          ${doc.bevindingen ? `<div class="pv-loc"><div class="lbl">Bevindingen</div><div class="verslag-tekst" style="margin-top:8px">${renderOpgemaakteTekst(doc.bevindingen)}</div></div>` : ""}
           ${rowsHtml}
         </div>
       </div>`;
@@ -2036,7 +2133,7 @@ function docExportHtml(doc, dossierObj){
       <div class="pv-loc">
         <div class="lbl">Locatie ${i + 1} &middot; postcode ${l.postcode}</div>
         <div style="font-size:11px;color:#8a90a3;margin-bottom:10px">${l.datum} &middot; ${l.tijd}</div>
-        <div style="font-size:13px;line-height:1.7">${l.tekst}</div>
+        <div class="verslag-tekst">${renderOpgemaakteTekst(l.tekst)}</div>
       </div>`).join("");
     return `
       <div class="pv-doc export-doc">
@@ -2061,7 +2158,7 @@ function docExportHtml(doc, dossierObj){
       return `
       <div class="pv-loc">
         ${lbl ? `<div class="lbl">${lbl}</div>` : ""}
-        <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;${lbl ? "margin-top:8px" : ""}">${s.tekst}</div>
+        <div class="verslag-tekst" style="${lbl ? "margin-top:8px" : ""}">${renderOpgemaakteTekst(s.tekst)}</div>
         ${fotosHtml}
       </div>`;
     }).join("");
@@ -2095,7 +2192,7 @@ function docExportHtml(doc, dossierObj){
       ${aanvullingen.map(a => `
         <div class="pv-loc">
           <div style="font-size:11px;color:#8a90a3;margin-bottom:6px">${a.datum} &middot; ${a.tijd || ""} ${a.auteur ? "&middot; " + a.auteur : ""}</div>
-          <div style="font-size:13px;line-height:1.6;white-space:pre-wrap">${a.tekst}</div>
+          <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
           ${a.foto_s ? `<div style="display:flex;gap:8px;margin-top:10px">${Array.from({length:a.foto_s}).map(() => `<div class="pv-photo"></div>`).join("")}</div>` : ""}
         </div>`).join("")}
     ` : "";
@@ -2110,7 +2207,7 @@ function docExportHtml(doc, dossierObj){
         </div>
         <div class="pv-body">
           ${doc.titel ? `<div style="font-size:14px;font-weight:700;margin-bottom:10px">${doc.titel}</div>` : ""}
-          ${doc.inhoud ? `<div style="font-size:13px;line-height:1.7;white-space:pre-wrap;margin-bottom:${rows.length || aanvullingen.length ? "14px" : "0"}">${doc.inhoud}</div>` : ""}
+          ${doc.inhoud ? `<div class="verslag-tekst" style="margin-bottom:${rows.length || aanvullingen.length ? "14px" : "0"}">${renderOpgemaakteTekst(doc.inhoud)}</div>` : ""}
           ${tableHtml}
           ${bijstandExtraHtml(doc)}
           ${aanvullingenHtml}
@@ -2125,7 +2222,7 @@ function docExportHtml(doc, dossierObj){
       return `
       <div class="pv-loc">
         ${s.kop ? `<div class="lbl">${s.kop}</div>` : ""}
-        <div style="font-size:13px;line-height:1.7;white-space:pre-wrap;${s.kop ? "margin-top:8px" : ""}">${s.tekst}</div>
+        <div class="verslag-tekst" style="${s.kop ? "margin-top:8px" : ""}">${renderOpgemaakteTekst(s.tekst)}</div>
         ${fotosHtml}
       </div>`;
     }).join("");
@@ -2229,7 +2326,7 @@ function genereerDossierExportHtml(d, session){
       </tbody>
     </table>
     <div class="section-title">Samenvatting</div>
-    <div class="muted" style="font-size:13px;line-height:1.6;margin-bottom:22px">${d.samenvatting || ""}</div>
+    <div class="muted verslag-tekst" style="margin-bottom:22px">${renderOpgemaakteTekst(d.samenvatting || "")}</div>
     <div class="section-title">Betrokkenen</div>
     <div style="margin-bottom:22px">${betrokkenenHtml}</div>
     <div class="section-title">Voertuigen</div>
@@ -2416,7 +2513,7 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
           <div class="field" style="${toontPostcode ? "" : "grid-column:1/-1"}"><label>Kop (optioneel)</label><input class="sec-kop" data-i="${i}" value="${s.kop}" placeholder="Bv. Vaststelling, Verloop, Besluit&hellip;"></div>
           ${toontPostcode ? `<div class="field"><label>Postcode (optioneel)</label><input class="sec-postcode" data-i="${i}" value="${s.postcode}" placeholder="Bv. 2000"></div>` : ""}
         </div>
-        <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:none">${s.tekst}</textarea></div>
+        <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:vertical">${s.tekst}</textarea></div>
         ${toontPostcode ? `
         <div class="field"><label>Foto's (optioneel)</label>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -2457,6 +2554,7 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".sec-kop").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].kop = e.target.value; }));
     modalBody.querySelectorAll(".sec-postcode").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].postcode = e.target.value; }));
     modalBody.querySelectorAll(".sec-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].tekst = e.target.value; }));
+    wireOpmaakToolbars(modalBody, ".sec-tekst");
     modalBody.querySelectorAll(".sec-addfoto").forEach(btn => btn.addEventListener("click", () => { const i = +btn.dataset.i; state.secties[i].fotos = (state.secties[i].fotos || 0) + 1; render_(); }));
     modalBody.querySelectorAll(".sec-foto-del").forEach(thumb => thumb.addEventListener("click", () => { const i = +thumb.dataset.i; state.secties[i].fotos = Math.max(0, (state.secties[i].fotos || 0) - 1); render_(); }));
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.secties.splice(+btn.dataset.i, 1); render_(); }));
@@ -2521,7 +2619,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
           <div class="field"><label>Tijdstip</label><input class="mono loc-tijd" data-i="${i}" value="${l.tijd}" placeholder="UU:MM" maxlength="5"></div>
         </div>
         <div class="field"><label>Postcode</label><input class="loc-postcode" data-i="${i}" value="${l.postcode}" placeholder="Bv. 2000"></div>
-        <div class="field"><label>Vaststellingen</label><textarea class="loc-tekst" data-i="${i}" rows="3" style="resize:none">${l.tekst}</textarea></div>
+        <div class="field"><label>Vaststellingen</label><textarea class="loc-tekst" data-i="${i}" rows="3" style="resize:vertical">${l.tekst}</textarea></div>
         <div class="field"><label>Foto's van de ploeg</label>
           <div style="display:flex;gap:8px;align-items:center">
             ${Array.from({length:l.photos}).map(() => `<div class="photothumb">&#128247;</div>`).join("")}
@@ -2556,6 +2654,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
     }));
     modalBody.querySelectorAll(".loc-postcode").forEach(inp => inp.addEventListener("input", (e) => { state.locations[+e.target.dataset.i].postcode = e.target.value; }));
     modalBody.querySelectorAll(".loc-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.locations[+e.target.dataset.i].tekst = e.target.value; }));
+    wireOpmaakToolbars(modalBody, ".loc-tekst");
     modalBody.querySelectorAll(".loc-addphoto").forEach(btn => btn.addEventListener("click", () => { state.locations[+btn.dataset.i].photos++; render_(); }));
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.locations.splice(+btn.dataset.i, 1); render_(); }));
     modalBody.querySelector("#addLocBtn").addEventListener("click", () => { state.locations.push({ datum: "", tijd: "", postcode: "", tekst: "", photos: 0 }); render_(); });
@@ -2667,7 +2766,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
       <div class="hint" style="margin:10px 0">Relevante tijdstippen</div>
       <div id="tijWrap">${tijdstippenHtml}</div>
       <button class="btn btn-ghost btn-sm" id="addTijBtn" style="margin:8px 0 18px">+ Tijdstip toevoegen</button>
-      <div class="field"><label>Bevindingen (optioneel)</label><textarea id="fBevindingen" rows="3" style="resize:none">${state.bevindingen}</textarea></div>
+      <div class="field"><label>Bevindingen (optioneel)</label><textarea id="fBevindingen" rows="3" style="resize:vertical">${state.bevindingen}</textarea></div>
       <div class="hint" style="margin:10px 0">${rowsHint}</div>
       <div id="rowsWrap">${rowsHtml}</div>
       <button class="btn btn-ghost btn-sm" id="addRowBtn" style="margin:8px 0 18px">+ ${rowsLabel.replace(/s$/, "")} toevoegen</button>
@@ -2685,6 +2784,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; });
     modalBody.querySelector("#fPostcode").addEventListener("input", (e) => { state.postcode = e.target.value; });
     modalBody.querySelector("#fBevindingen").addEventListener("input", (e) => { state.bevindingen = e.target.value; });
+    maakOpmaakToolbar(modalBody.querySelector("#fBevindingen"));
     modalBody.querySelectorAll(".tij-label").forEach(inp => inp.addEventListener("input", (e) => { state.tijdstippen[+e.target.dataset.i].label = e.target.value; }));
     modalBody.querySelectorAll(".tij-tijd").forEach(inp => inp.addEventListener("input", (e) => { const i = +e.target.dataset.i; state.tijdstippen[i].tijd = fmtTimeInput(e.target.value); e.target.value = state.tijdstippen[i].tijd; }));
     modalBody.querySelectorAll(".tij-remove").forEach(btn => btn.addEventListener("click", () => { state.tijdstippen.splice(+btn.dataset.i, 1); render_(); }));
@@ -2770,7 +2870,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
           ${state.secties.length > 1 ? `<span class="loc-remove" data-i="${i}" style="color:var(--red);font-size:12px;cursor:pointer;font-weight:600">Verwijderen</span>` : ""}
         </div>
         <div class="field"><label>Kop (optioneel)</label><input class="sec-kop" data-i="${i}" value="${s.kop}" placeholder="Bv. Vraag 1, Verklaring over..."></div>
-        <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:none">${s.tekst}</textarea></div>
+        <div class="field"><label>Tekst</label><textarea class="sec-tekst" data-i="${i}" rows="4" style="resize:vertical">${s.tekst}</textarea></div>
         <div class="field"><label>Foto's (optioneel)</label>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${Array.from({length:s.fotos}).map((_, fi) => `<div class="photothumb sec-foto-del" data-i="${i}" data-fi="${fi}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
@@ -2833,6 +2933,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#fTitel").addEventListener("input", (e) => { state.titel = e.target.value; });
     modalBody.querySelectorAll(".sec-kop").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].kop = e.target.value; }));
     modalBody.querySelectorAll(".sec-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.secties[+e.target.dataset.i].tekst = e.target.value; }));
+    wireOpmaakToolbars(modalBody, ".sec-tekst");
     modalBody.querySelectorAll(".sec-addfoto").forEach(btn => btn.addEventListener("click", () => { const i = +btn.dataset.i; state.secties[i].fotos = (state.secties[i].fotos || 0) + 1; render_(); }));
     modalBody.querySelectorAll(".sec-foto-del").forEach(thumb => thumb.addEventListener("click", () => { const i = +thumb.dataset.i; state.secties[i].fotos = Math.max(0, (state.secties[i].fotos || 0) - 1); render_(); }));
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.secties.splice(+btn.dataset.i, 1); render_(); }));
@@ -2936,20 +3037,20 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         <div class="field"><label>Tijdstip</label><input class="mono" id="fTijd" value="${state.tijd}" placeholder="UU:MM" maxlength="5"></div>
       </div>
       <div class="field"><label>Titel / korte omschrijving</label><input id="fTitel" value="${state.titel}" placeholder="${isTap ? "Bv. TAP DE SMET Victor" : isBijstand ? "Bv. Bijstand AE &ndash; inval postcode 2000" : "Bv. Resultaten &ndash; Proximus, Resultaten &ndash; Bank, Resultaten &ndash; Andere"}"></div>
-      ${isBijstand ? "" : `<div class="field"><label>Inhoud / duiding</label><textarea id="fInhoud" rows="3" style="resize:none" placeholder="Korte duiding bij de resultaten">${state.inhoud}</textarea></div>`}
+      ${isBijstand ? "" : `<div class="field"><label>Inhoud / duiding</label><textarea id="fInhoud" rows="3" style="resize:vertical" placeholder="Korte duiding bij de resultaten">${state.inhoud}</textarea></div>`}
       <div class="hint" style="margin:10px 0">${isBijstand ? "Gegevens voor de eenheid &mdash; label / waarde per rij, zodat ze zich kunnen voorbereiden" : "Resultatentabel &mdash; label / waarde per rij (vervangt de externe spreadsheet)"}</div>
       <div id="rowsWrap">${rowsHtml}</div>
       <button class="btn btn-ghost btn-sm" id="addRowBtn" style="margin:8px 0 18px">+ Rij toevoegen</button>
       ${isBijstand ? `
-        <div class="field"><label>Reden / context &amp; omschrijving opdracht</label><textarea id="fReden" rows="4" style="resize:none" placeholder="Waarom is bijstand nodig, en wat wordt precies van de eenheid verwacht">${state.reden}</textarea></div>
-        <div class="field"><label>Informatie verdachten</label><textarea id="fVerdachten" rows="5" style="resize:none">${state.verdachtenInfo}</textarea></div>
+        <div class="field"><label>Reden / context &amp; omschrijving opdracht</label><textarea id="fReden" rows="4" style="resize:vertical" placeholder="Waarom is bijstand nodig, en wat wordt precies van de eenheid verwacht">${state.reden}</textarea></div>
+        <div class="field"><label>Informatie verdachten</label><textarea id="fVerdachten" rows="5" style="resize:vertical">${state.verdachtenInfo}</textarea></div>
         <div class="field"><label>Foto's bij informatie verdachten (optioneel)</label>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${Array.from({length:state.verdachtenFotos}).map((_, i) => `<div class="photothumb verdachten-foto-del" data-i="${i}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
             <div class="photothumb" id="addVerdachtenFotoBtn" title="Foto toevoegen">+</div>
           </div>
         </div>
-        <div class="field"><label>Beschrijving van het pand</label><textarea id="fPand" rows="3" style="resize:none" placeholder="Indeling, toegangen, mogelijke vluchtwegen, ...">${state.pand}</textarea></div>
+        <div class="field"><label>Beschrijving van het pand</label><textarea id="fPand" rows="3" style="resize:vertical" placeholder="Indeling, toegangen, mogelijke vluchtwegen, ...">${state.pand}</textarea></div>
         <div class="field"><label>Foto's bij beschrijving van het pand (optioneel)</label>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${Array.from({length:state.pandFotos}).map((_, i) => `<div class="photothumb pand-foto-del" data-i="${i}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
@@ -2970,10 +3071,10 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#fTijd").addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; });
     if (isAdmin(session)) modalBody.querySelector("#fAuteur").addEventListener("input", (e) => { state.auteur = e.target.value; });
     if (modalBody.querySelector("#fTitel")) modalBody.querySelector("#fTitel").addEventListener("input", (e) => { state.titel = e.target.value; });
-    if (modalBody.querySelector("#fInhoud")) modalBody.querySelector("#fInhoud").addEventListener("input", (e) => { state.inhoud = e.target.value; });
-    if (modalBody.querySelector("#fReden")) modalBody.querySelector("#fReden").addEventListener("input", (e) => { state.reden = e.target.value; });
-    if (modalBody.querySelector("#fVerdachten")) modalBody.querySelector("#fVerdachten").addEventListener("input", (e) => { state.verdachtenInfo = e.target.value; });
-    if (modalBody.querySelector("#fPand")) modalBody.querySelector("#fPand").addEventListener("input", (e) => { state.pand = e.target.value; });
+    if (modalBody.querySelector("#fInhoud")){ modalBody.querySelector("#fInhoud").addEventListener("input", (e) => { state.inhoud = e.target.value; }); maakOpmaakToolbar(modalBody.querySelector("#fInhoud")); }
+    if (modalBody.querySelector("#fReden")){ modalBody.querySelector("#fReden").addEventListener("input", (e) => { state.reden = e.target.value; }); maakOpmaakToolbar(modalBody.querySelector("#fReden")); }
+    if (modalBody.querySelector("#fVerdachten")){ modalBody.querySelector("#fVerdachten").addEventListener("input", (e) => { state.verdachtenInfo = e.target.value; }); maakOpmaakToolbar(modalBody.querySelector("#fVerdachten")); }
+    if (modalBody.querySelector("#fPand")){ modalBody.querySelector("#fPand").addEventListener("input", (e) => { state.pand = e.target.value; }); maakOpmaakToolbar(modalBody.querySelector("#fPand")); }
     if (modalBody.querySelector("#fDossierbeheerders")) modalBody.querySelector("#fDossierbeheerders").addEventListener("input", (e) => { state.dossierbeheerders = e.target.value; });
     if (modalBody.querySelector("#fLink")) modalBody.querySelector("#fLink").addEventListener("input", (e) => { state.externLink = e.target.value; });
     modalBody.querySelectorAll(".row-label").forEach(inp => inp.addEventListener("input", (e) => { state.rows[+e.target.dataset.i].label = e.target.value; }));
@@ -3050,7 +3151,7 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
         <div class="field"><label>Datum</label><input class="mono" id="fADatum" placeholder="DD/MM/JJJJ" maxlength="10"></div>
         <div class="field"><label>Tijdstip</label><input class="mono" id="fATijd" placeholder="UU:MM" maxlength="5"></div>
       </div>
-      <div class="field"><label>Aanvullende informatie</label><textarea id="fATekst" rows="4" style="resize:none" placeholder="Bv. een statusupdate of nieuwe informatie bij dit document"></textarea></div>
+      <div class="field"><label>Aanvullende informatie</label><textarea id="fATekst" rows="4" style="resize:vertical" placeholder="Bv. een statusupdate of nieuwe informatie bij dit document"></textarea></div>
       <div class="field"><label>Foto's (optioneel)</label>
         <div style="display:flex;gap:8px;align-items:center">
           ${Array.from({length:state.foto_s}).map((_, i) => `<div class="photothumb aanv-foto-del" data-i="${i}" title="Klik om te verwijderen">&#128247;</div>`).join("")}
@@ -3068,6 +3169,7 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
     fADatum.addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); state.datum = e.target.value; });
     fATijd.addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; });
     fATekst.addEventListener("input", (e) => { state.tekst = e.target.value; });
+    maakOpmaakToolbar(fATekst);
     modalBody.querySelector("#addFotoBtn").addEventListener("click", () => { state.foto_s++; render_(); });
     modalBody.querySelectorAll(".aanv-foto-del").forEach(thumb => thumb.addEventListener("click", () => { state.foto_s = Math.max(0, state.foto_s - 1); render_(); }));
     modalBody.querySelector("#saveAanvulling").addEventListener("click", () => {
