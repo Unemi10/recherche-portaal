@@ -64,10 +64,6 @@ function seedData(){
         voertuigen: [
           { kenteken: "1-KFW-204", merkModel: "BMW 3-reeks", kleur: "Zwart", betrokkeneNaam: "Victor DE SMET", notities: "Gezien aan de loods tijdens de OBN-observaties.", fotos: 0 }
         ],
-        bewijs: [
-          { nr: "B-01", omschrijving: "Resultaten bankbevraging", vindplaats: "Documenten &middot; Beschikbare resultaten", houder: "Infocel LRD" },
-          { nr: "B-02", omschrijving: "TAP-dossier (telefonie-afluistering)", vindplaats: "Documenten &middot; TAP-dossier (wordt aangevuld)", houder: "Onderzoeksrechter" }
-        ],
         acties: [
           { id: "act1", tekst: "TAP-dossier opvolgen en aanvullen zodra er nieuwe resultaten zijn.", voltooid: false, toegewezenId: 3, aangemaaktDoor: "Unemi", aangemaaktOp: "24/10/2026" },
           { id: "act2", tekst: "Victor DE SMET laten oproepen voor verhoor.", voltooid: true, toegewezenId: 1, aangemaaktDoor: "Unemi", aangemaaktOp: "23/10/2026" }
@@ -148,8 +144,8 @@ function seedData(){
           }
         ]
       },
-      { id: "nachtuil", naam: "Nachtuil", status: "gesloten", typeDelict: "Inbraakreeks industriezone", verantwoordelijke: "Dex", datumGeopend: "02/09/2026", samenvatting: "Afgesloten dossier.", betrokkenen: [], voertuigen: [], bewijs: [], documenten: [], acties: [] },
-      { id: "rodeloods", naam: "Rode Loods", status: "gesloten", typeDelict: "Heling", verantwoordelijke: "EXTRA", datumGeopend: "11/08/2026", samenvatting: "Afgesloten dossier.", betrokkenen: [], voertuigen: [], bewijs: [], documenten: [], acties: [] }
+      { id: "nachtuil", naam: "Nachtuil", status: "gesloten", typeDelict: "Inbraakreeks industriezone", verantwoordelijke: "Dex", datumGeopend: "02/09/2026", samenvatting: "Afgesloten dossier.", betrokkenen: [], voertuigen: [], documenten: [], acties: [] },
+      { id: "rodeloods", naam: "Rode Loods", status: "gesloten", typeDelict: "Heling", verantwoordelijke: "EXTRA", datumGeopend: "11/08/2026", samenvatting: "Afgesloten dossier.", betrokkenen: [], voertuigen: [], documenten: [], acties: [] }
     ],
     nextMemberId: 11,
     nextDocId: 12,
@@ -187,19 +183,18 @@ function migrateDb(data){
     }
     data.rosterV2 = true;
   }
-  // Eenmalige, expliciet gevraagde reset van de documenten (en bijhorend bewijs) in het
-  // Kingfisher-demo-dossier naar de nieuwe fictieve chronologie die alle 9 echte documenttypes
-  // toont. Dit overschrijft bewust ook een reeds geopende/aangepaste browser, want dit was een
-  // directe vraag van de gebruiker zelf om alle documenten in dit dossier te vervangen. Andere
-  // dossiers en alle eigen aanpassingen daarbuiten (leden, andere dossiers, betrokkenen, ...)
-  // blijven onaangeroerd. Draait maar één keer dankzij de kingfisherDemoV2-vlag.
+  // Eenmalige, expliciet gevraagde reset van de documenten in het Kingfisher-demo-dossier naar de
+  // nieuwe fictieve chronologie die alle 9 echte documenttypes toont. Dit overschrijft bewust ook
+  // een reeds geopende/aangepaste browser, want dit was een directe vraag van de gebruiker zelf om
+  // alle documenten in dit dossier te vervangen. Andere dossiers en alle eigen aanpassingen
+  // daarbuiten (leden, andere dossiers, betrokkenen, ...) blijven onaangeroerd. Draait maar één
+  // keer dankzij de kingfisherDemoV2-vlag.
   if (!data.kingfisherDemoV2){
     const fresh = seedData();
     const freshKingfisher = fresh.dossiers.find(d => d.id === "kingfisher");
     const kingfisher = (data.dossiers || []).find(d => d.id === "kingfisher");
     if (kingfisher && freshKingfisher){
       kingfisher.documenten = freshKingfisher.documenten;
-      kingfisher.bewijs = freshKingfisher.bewijs;
       data.nextDocId = Math.max(data.nextDocId || 0, fresh.nextDocId);
     }
     data.kingfisherDemoV2 = true;
@@ -250,7 +245,9 @@ function migrateDb(data){
     if (d.opsporing === undefined) d.opsporing = false;
     if (!d.betrokkenen) d.betrokkenen = [];
     if (!d.voertuigen) d.voertuigen = [];
-    if (!d.bewijs) d.bewijs = [];
+    // Het vroegere, nooit in de interface gebruikte "bewijs"-veld opruimen: bewijsstukken worden
+    // gewoon binnen het CSI-verslag zelf vernoemd, dus dit losse veld is overbodig.
+    if (d.bewijs !== undefined) delete d.bewijs;
     if (!d.documenten) d.documenten = [];
     if (!d.acties) d.acties = [];
     // Zelfde reden als bij betrokkenen hierboven: vast, uniek ID voor elk voertuig.
@@ -1821,7 +1818,7 @@ function dossierOverzichtTijdlijn(d, session){
 // mag door eender welke leiding, of door het toegewezen lid zelf voor zijn eigen actie &mdash;
 // gewone leden (rol "lid") zien de lijst enkel.
 function renderActiesCard(container, d, session){
-  const canBeheer = !!(session && session.rol === "leiding");
+  const canBeheer = !!(session && (session.rol === "leiding" || session.rol === "hoofdrechercheur" || isAdmin(session)));
   // Zie openSimpleDocForm hierboven: dit kaartje kan een tijdje zichtbaar blijven (bv. terwijl
   // iemand een nieuwe actie staat te typen) zonder dat de hele pagina opnieuw rendert, dus bij
   // elke mutatie hieronder altijd het live dossier via zijn ID opnieuw opzoeken.
@@ -1933,7 +1930,7 @@ function openOverzichtForm(d){
   const isNew = !d;
   // Zie openSimpleDocForm verderop: enkel het ID bewaren, bij opslaan/verwijderen altijd live opzoeken.
   const dossierId = d ? d.id : null;
-  const obj = d || { id: null, naam: "", typeDelict: "", status: "open", verantwoordelijke: "", datumGeopend: "", samenvatting: "", opsporing: false, betrokkenen: [], voertuigen: [], bewijs: [], documenten: [], acties: [] };
+  const obj = d || { id: null, naam: "", typeDelict: "", status: "open", verantwoordelijke: "", datumGeopend: "", samenvatting: "", opsporing: false, betrokkenen: [], voertuigen: [], documenten: [], acties: [] };
   openModal(`
     <div class="modal-head"><h2>${isNew ? "Nieuw dossier" : "Dossier bewerken"}</h2><button class="modal-close" id="mClose">&times;</button></div>
     <div class="field"><label>Naam dossier</label><input id="fNaam" value="${obj.naam}"></div>
@@ -1971,7 +1968,7 @@ function openOverzichtForm(d){
     if (isNew){
       db.dossiers.push({
         id: slugifyDossierNaam(naam), naam, typeDelict, status, verantwoordelijke, datumGeopend, samenvatting, opsporing,
-        betrokkenen: [], voertuigen: [], bewijs: [], documenten: [], acties: []
+        betrokkenen: [], voertuigen: [], documenten: [], acties: []
       });
       logActiviteit(getSession(), `Dossier aangemaakt: "${naam}"`, naam);
     } else {
