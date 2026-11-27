@@ -631,10 +631,16 @@ function escapeHtml(str){
 }
 function renderOpgemaakteTekst(tekst){
   if (!tekst) return "";
-  const inline = (line) => escapeHtml(line)
+  // Tijdelijke plaatshouder voor een regeleinde ZOLANG we nog binnen hetzelfde opmaakblok zitten
+  // (zie hieronder): zo'n plaatshouder is, anders dan een echte "\n", geen regex-regeleinde, en
+  // laat "**vet**"/"_cursief_"/"++onderlijnd++" dus ook over meerdere regels/zinnen heen werken
+  // (bv. een volledige alinea in één keer cursief maken), in plaats van enkel binnen één regel.
+  const NL = "\u0001";
+  const inline = (blok) => escapeHtml(blok)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\+\+(.+?)\+\+/g, "<u>$1</u>")
-    .replace(/_(.+?)_/g, "<em>$1</em>");
+    .replace(/_(.+?)_/g, "<em>$1</em>")
+    .split(NL).join("<br>");
   const regels = String(tekst).split("\n");
   const blokken = [];
   regels.forEach(regel => {
@@ -644,12 +650,14 @@ function renderOpgemaakteTekst(tekst){
       if (laatste && laatste.type === "lijst") laatste.items.push(m[1]);
       else blokken.push({ type: "lijst", items: [m[1]] });
     } else {
-      blokken.push({ type: "regel", tekst: regel });
+      const laatste = blokken[blokken.length - 1];
+      if (laatste && laatste.type === "regel") laatste.regels.push(regel);
+      else blokken.push({ type: "regel", regels: [regel] });
     }
   });
   const html = blokken.map(b => b.type === "lijst"
     ? `<ul>${b.items.map(i => `<li>${inline(i)}</li>`).join("")}</ul>`
-    : inline(b.tekst) + "<br>"
+    : inline(b.regels.join(NL)) + "<br>"
   ).join("");
   return html.replace(/<br>$/, "");
 }
