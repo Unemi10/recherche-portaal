@@ -4244,7 +4244,7 @@ const LID_TAART_PALET = ["var(--gold)", "var(--blue)", "var(--purple)", "var(--r
 // per statistiek meteen zowel een staaf- als een taartdiagram getoond kan worden met dezelfde data.
 function memberDonutSegments(rows, getValue){
   return rows.slice().sort((a, b) => getValue(b) - getValue(a)).map((r, i) => ({
-    label: naamMetCallsign(r.member),
+    label: r.member.naam,
     value: getValue(r),
     color: LID_TAART_PALET[i % LID_TAART_PALET.length]
   }));
@@ -4262,7 +4262,7 @@ function barChartHtml(title, rows, getValue){
         const pct = Math.round((val / max) * 100);
         return `<div style="margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-            <span>${naamMetCallsign(r.member)}</span><span class="muted">${val}</span>
+            <span>${r.member.naam}</span><span class="muted">${val}</span>
           </div>
           <div style="background:var(--border2);border-radius:6px;height:8px;overflow:hidden">
             <div style="background:var(--gold);height:100%;width:${pct}%"></div>
@@ -4352,7 +4352,7 @@ function beheerStatistieken(session){
         <tbody>
           ${stats.slice().sort((a, b) => (a.member.volgorde ?? 0) - (b.member.volgorde ?? 0)).map(r => `
             <tr>
-              <td>${naamMetCallsign(r.member)}</td>
+              <td>${r.member.naam}</td>
               <td>${r.documenten}</td>
               <td>${r.aanvullingen}</td>
               <td>${r.aanwezig}</td>
