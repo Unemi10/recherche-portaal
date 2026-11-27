@@ -405,6 +405,28 @@ function getSession(){
 function isAdmin(session){
   return !!(session && session.rol === "leiding" && session.admin === true);
 }
+// Een admin mag élk verslag bewerken/verwijderen. Daarnaast mag de auteur van een verslag ook
+// zijn eigen verslag nog bewerken (bv. om nadien nog foto's toe te voegen) &mdash; elke wijziging
+// blijft gewoon gelogd via logActiviteit, net als bij een admin-wijziging. Oudere documenten (van
+// vóór dit auteurId-veld bestond) vallen terug op een naamvergelijking.
+function magDocBewerken(doc, session){
+  if (!session) return false;
+  if (isAdmin(session)) return true;
+  if (!doc) return false;
+  if (doc.auteurId !== undefined && doc.auteurId !== null) return String(doc.auteurId) === String(session.id);
+  return !!doc.auteur && doc.auteur === session.naam;
+}
+// Een aanvulling (toevoeging bij een document) mag door eender wie toegevoegd worden -- dat is
+// net de bedoeling, zodat ook een ander lid later nog iets kan aanvullen bij eens anders verslag.
+// Bewerken/verwijderen van een bestaande aanvulling blijft wel beperkt: admin, de hoofdauteur van
+// het document zelf, of wie die aanvulling zelf schreef.
+function magAanvullingBewerken(aanvulling, doc, session){
+  if (!session) return false;
+  if (isAdmin(session) || magDocBewerken(doc, session)) return true;
+  if (!aanvulling) return false;
+  if (aanvulling.auteurId !== undefined && aanvulling.auteurId !== null) return String(aanvulling.auteurId) === String(session.id);
+  return !!aanvulling.auteur && aanvulling.auteur === session.naam;
+}
 // Leiding (admin of niet) en hoofdrechercheur mogen het Beheer-tabblad zien; binnen Beheer zelf
 // bepalen de specifieke functies verder wat ze precies mogen (zie beheerLeden/openMemberForm).
 function magBeheerZien(session){
@@ -1711,7 +1733,7 @@ function docTypeChipClass(type){
 }
 
 function docRow(doc, dossierObj, session){
-  const canEdit = isAdmin(session);
+  const canEdit = magDocBewerken(doc, session);
   const ongelezen = isDocOngelezen(doc, session);
   const row = el(`<div class="card ${ongelezen ? "doc-unread" : ""}" style="display:flex;gap:16px;align-items:flex-start;${doc.pending ? "border-style:dashed;opacity:.75" : ""};margin-bottom:8px;cursor:pointer">
     <div style="flex:0 0 92px">
@@ -1974,7 +1996,7 @@ function pvHeadHtml(doc, dossierObj, extraBadgeHtml){
     </div>`;
 }
 function openDocDetail(doc, dossierObj, session){
-  const canEdit = isAdmin(session);
+  const canEdit = magDocBewerken(doc, session);
   markDocAlsGelezen(doc, session);
   if (doc.tijdstippen){
     const isCSI = doc.type === "CSI-verslag";
@@ -2178,7 +2200,7 @@ function openDocDetail(doc, dossierObj, session){
         <div class="pv-loc">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
             <div style="font-size:11px;color:#8a90a3">${a.datum} &middot; ${a.tijd || ""} ${a.auteur ? "&middot; " + a.auteur : ""}</div>
-            ${canEdit ? `<div style="display:flex;gap:10px;flex:0 0 auto">
+            ${magAanvullingBewerken(a, doc, session) ? `<div style="display:flex;gap:10px;flex:0 0 auto">
               <span class="aanv-edit" data-i="${i}" style="font-size:11px;color:var(--gold);cursor:pointer;font-weight:600">Bewerken</span>
               <span class="aanv-del" data-i="${i}" style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600">Verwijderen</span>
             </div>` : ""}
@@ -2209,7 +2231,7 @@ function openDocDetail(doc, dossierObj, session){
       </div>
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
         ${doc.type === "Bijstandsaanvraag" ? `<button class="btn btn-ghost btn-sm" id="exportDocBtn" title="Dit document apart als PDF exporteren, bv. om door te sturen naar een andere eenheid">Exporteer (PDF)</button>` : ""}
-        ${canEdit ? `<button class="btn btn-ghost btn-sm" id="addAanvullingBtn">+ Aanvulling toevoegen</button>` : ""}
+        ${session ? `<button class="btn btn-ghost btn-sm" id="addAanvullingBtn">+ Aanvulling toevoegen</button>` : ""}
         ${canEdit ? `<button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button>` : ""}
         ${canEdit ? `<button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button>` : ""}
       </div>
@@ -2219,7 +2241,7 @@ function openDocDetail(doc, dossierObj, session){
     if (doc.type === "Bijstandsaanvraag"){
       document.getElementById("exportDocBtn").addEventListener("click", () => exporteerDocumentAlsPdf(doc, dossierObj));
     }
-    if (canEdit){
+    if (session){
       document.getElementById("addAanvullingBtn").addEventListener("click", () => { closeModal(); openAanvullingForm(doc, dossierObj, session); });
       document.querySelectorAll(".aanv-edit").forEach(span => span.addEventListener("click", () => {
         closeModal();
@@ -2229,10 +2251,13 @@ function openDocDetail(doc, dossierObj, session){
         const target = aanvullingen[+span.dataset.i];
         confirmModal("Deze aanvulling verwijderen?", () => {
           doc.aanvullingen = doc.aanvullingen.filter(x => x !== target);
+          logActiviteit(session, "Aanvulling verwijderd", dossierObj.naam);
           DB.save(db);
           openDocDetail(doc, dossierObj, session);
         });
       }));
+    }
+    if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openResultatenForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
@@ -2758,7 +2783,7 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
         if (afkomstigVan !== undefined) existingDoc.afkomstigVan = afkomstigVan;
         logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
       } else {
-        const newDoc = { id: "d" + (db.nextDocId++), type, auteur, datum, tijd, titel, secties: secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }], aanwezigen: state.aanwezigen, gezienDoor: [session.id] };
+        const newDoc = { id: "d" + (db.nextDocId++), type, auteur, auteurId: session.id, datum, tijd, titel, secties: secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }], aanwezigen: state.aanwezigen, gezienDoor: [session.id] };
         if (afkomstigVan !== undefined) newDoc.afkomstigVan = afkomstigVan;
         dossierObj.documenten.push(newDoc);
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
@@ -2854,6 +2879,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
           type,
           specialisatie,
           auteur,
+          auteurId: session.id,
           datum: first.datum || "&ndash;",
           tijd: first.tijd || "",
           locaties,
@@ -2991,7 +3017,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
         logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
       } else {
         const newDoc = {
-          id: "d" + (db.nextDocId++), type, specialisatie, auteur, datum, tijd: eersteTijd,
+          id: "d" + (db.nextDocId++), type, specialisatie, auteur, auteurId: session.id, datum, tijd: eersteTijd,
           postcode, bevindingen,
           tijdstippen: tijdstippen.length ? tijdstippen : [{ label: "", tijd: "" }],
           rows,
@@ -3130,7 +3156,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
         Object.assign(existingDoc, payload);
         logActiviteit(session, "Verhoor-verslag bewerkt", dossierObj.naam);
       } else {
-        dossierObj.documenten.push({ id: "d" + (db.nextDocId++), type: "Verhoor-verslag", ...payload, gezienDoor: [session.id] });
+        dossierObj.documenten.push({ id: "d" + (db.nextDocId++), type: "Verhoor-verslag", ...payload, auteurId: session.id, gezienDoor: [session.id] });
         logActiviteit(session, "Verhoor-verslag toegevoegd", dossierObj.naam);
       }
       DB.save(db);
@@ -3288,7 +3314,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         dossierObj.documenten.push({
           id: "d" + (db.nextDocId++),
           type,
-          auteur, datum, tijd, titel, inhoud, externLink, rows,
+          auteur, auteurId: session.id, datum, tijd, titel, inhoud, externLink, rows,
           foto_s: state.foto_s || [],
           ...bijstandExtra,
           aanwezigen: state.aanwezigen,
@@ -3350,11 +3376,13 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
     if (isEdit){
       existingAanvulling.datum = datum; existingAanvulling.tijd = tijd;
       existingAanvulling.tekst = tekst; existingAanvulling.foto_s = state.foto_s;
+      logActiviteit(session, "Aanvulling bewerkt", dossierObj.naam);
     } else {
-      doc.aanvullingen.push({ datum, tijd, tekst, auteur: session.naam, foto_s: state.foto_s });
+      doc.aanvullingen.push({ datum, tijd, tekst, auteur: session.naam, auteurId: session.id, foto_s: state.foto_s });
       // Een nieuwe aanvulling maakt het document opnieuw "ongelezen" voor iedereen behalve wie ze nu
       // net toevoegde, zodat anderen zien dat er iets is bijgekomen.
       doc.gezienDoor = [session.id];
+      logActiviteit(session, `Aanvulling toegevoegd bij ${doc.type}`, dossierObj.naam);
     }
     DB.save(db);
     closeModal();
