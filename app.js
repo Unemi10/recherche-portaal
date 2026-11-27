@@ -615,7 +615,33 @@ function renderOpgemaakteTekst(tekst){
   ).join("");
   return html.replace(/<br>$/, "");
 }
-// Voegt een balkje met opmaakknoppen toe vlak voor de meegegeven textarea. Werkt op de
+// Past een inline opmaakmarkering (bv. **...**) toe op de huidige selectie in de textarea. Staat
+// de selectie (of de tekst er net buiten) al tussen diezelfde markeringen, dan wordt de opmaak er
+// net afgehaald in plaats van een tweede keer toegevoegd &mdash; zo werkt nogmaals klikken/
+// nogmaals de sneltoets indrukken als een echte aan/uit-schakelaar, zoals in Word of Google Docs.
+function toggleInlineOpmaak(textarea, before, after){
+  textarea.focus();
+  const start = textarea.selectionStart, end = textarea.selectionEnd;
+  const waarde = textarea.value;
+  const voorMatch = waarde.slice(Math.max(0, start - before.length), start) === before;
+  const naMatch = waarde.slice(end, end + after.length) === after;
+  if (voorMatch && naMatch){
+    const nieuweStart = start - before.length;
+    const nieuweEnd = end + after.length;
+    textarea.value = waarde.slice(0, nieuweStart) + waarde.slice(start, end) + waarde.slice(nieuweEnd);
+    textarea.selectionStart = nieuweStart;
+    textarea.selectionEnd = nieuweStart + (end - start);
+  } else {
+    const selectie = waarde.slice(start, end) || "tekst";
+    const vervanging = before + selectie + after;
+    textarea.value = waarde.slice(0, start) + vervanging + waarde.slice(end);
+    textarea.selectionStart = start + before.length;
+    textarea.selectionEnd = start + before.length + selectie.length;
+  }
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+// Voegt een balkje met opmaakknoppen toe vlak voor de meegegeven textarea, en koppelt meteen ook
+// de bijhorende sneltoetsen (Ctrl+B/I/U, of Cmd+B/I/U op Mac) aan diezelfde textarea. Werkt op de
 // tekstselectie van de gebruiker (of voegt markeringen rond de cursor in als er niets
 // geselecteerd is) en stuurt daarna een "input"-event, zodat de bestaande input-listener
 // op de textarea de state gewoon bijwerkt &mdash; geen aparte opslaglogica nodig per aanroepplaats.
@@ -623,9 +649,9 @@ function maakOpmaakToolbar(textarea){
   const bar = document.createElement("div");
   bar.className = "opmaak-toolbar";
   const knoppen = [
-    { html: "<b>V</b>", titel: "Vet", before: "**", after: "**" },
-    { html: "<i>I</i>", titel: "Cursief", before: "_", after: "_" },
-    { html: "<u>O</u>", titel: "Onderlijnd", before: "++", after: "++" },
+    { html: "<b>V</b>", titel: "Vet (Ctrl+B)", before: "**", after: "**", sneltoets: "b" },
+    { html: "<i>I</i>", titel: "Cursief (Ctrl+I)", before: "_", after: "_", sneltoets: "i" },
+    { html: "<u>O</u>", titel: "Onderlijnd (Ctrl+U)", before: "++", after: "++", sneltoets: "u" },
     { html: "&bull;", titel: "Opsomming", lijst: true }
   ];
   knoppen.forEach(k => {
@@ -636,10 +662,10 @@ function maakOpmaakToolbar(textarea){
     btn.innerHTML = k.html;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
-      textarea.focus();
-      const start = textarea.selectionStart, end = textarea.selectionEnd;
-      const waarde = textarea.value;
       if (k.lijst){
+        textarea.focus();
+        const start = textarea.selectionStart, end = textarea.selectionEnd;
+        const waarde = textarea.value;
         const voorRegelStart = waarde.lastIndexOf("\n", start - 1) + 1;
         let naRegelEnd = waarde.indexOf("\n", end);
         if (naRegelEnd === -1) naRegelEnd = waarde.length;
@@ -648,16 +674,19 @@ function maakOpmaakToolbar(textarea){
         textarea.value = waarde.slice(0, voorRegelStart) + nieuwBlok + waarde.slice(naRegelEnd);
         textarea.selectionStart = voorRegelStart;
         textarea.selectionEnd = voorRegelStart + nieuwBlok.length;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
       } else {
-        const selectie = waarde.slice(start, end) || "tekst";
-        const vervanging = k.before + selectie + k.after;
-        textarea.value = waarde.slice(0, start) + vervanging + waarde.slice(end);
-        textarea.selectionStart = start + k.before.length;
-        textarea.selectionEnd = start + k.before.length + selectie.length;
+        toggleInlineOpmaak(textarea, k.before, k.after);
       }
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
     bar.appendChild(btn);
+  });
+  textarea.addEventListener("keydown", (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    const knop = knoppen.find(k => !k.lijst && k.sneltoets === e.key.toLowerCase());
+    if (!knop) return;
+    e.preventDefault();
+    toggleInlineOpmaak(textarea, knop.before, knop.after);
   });
   textarea.parentNode.insertBefore(bar, textarea);
   return bar;
