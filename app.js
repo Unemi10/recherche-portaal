@@ -984,6 +984,37 @@ function openModal(innerHtml, wide){
   root.appendChild(backdrop);
 }
 function closeModal(){ document.getElementById("modal-root").innerHTML = ""; }
+// Toont een klein, los popupje bovenop een eventueel al openstaand formulier (bv. de
+// standaardtekst van de rechten bij een verhoor), zonder dat openstaande modal/formulier
+// (met zijn nog niet-opgeslagen invoer) daarbij verloren gaat: dit hangt, anders dan
+// openModal(), een EXTRA laag toe aan de pagina in plaats van modal-root leeg te maken.
+function openInfoPopup(titel, bodyHtml){
+  const overlay = el(`<div class="modal-backdrop" style="z-index:200">
+    <div class="modal">
+      <div class="modal-head"><h2>${titel}</h2><button class="modal-close" id="infoPopupClose">&times;</button></div>
+      <div style="font-size:13px;line-height:1.7">${bodyHtml}</div>
+    </div>
+  </div>`);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector("#infoPopupClose").addEventListener("click", () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+// Korte, in eigen woorden samengevatte herinnering aan de rechten die een verdachte/ondervraagde
+// voorafgaand aan een verhoor moet krijgen (gebaseerd op art. 47bis Wetboek van Strafvordering,
+// de Belgische "Salduz"-regeling) &mdash; een geheugensteun, geen letterlijke wettekst.
+const RECHTEN_STANDAARDTEKST = `
+  <p style="margin-top:0">Voor het eerste verhoor moet de ondervraagde gewezen worden op onder meer volgende rechten:</p>
+  <ul style="margin:0 0 14px 20px; padding:0">
+    <li style="margin-bottom:6px">Vrije keuze: een verklaring afleggen, op vragen antwoorden, of zwijgen.</li>
+    <li style="margin-bottom:6px">Niet verplicht worden zichzelf te beschuldigen.</li>
+    <li style="margin-bottom:6px">Alles wat gezegd wordt, kan als bewijs gebruikt worden.</li>
+    <li style="margin-bottom:6px">Recht op bijstand van een advocaat.</li>
+    <li style="margin-bottom:6px">Recht op een tolk/vertaling als de proceduretaal niet begrepen of gesproken wordt.</li>
+    <li style="margin-bottom:6px">Recht om op het einde van het verhoor kosteloos een kopie van de verklaring te vragen.</li>
+    <li>Bij vrijheidsberoving: recht om iemand te laten verwittigen en recht op bijstand van een arts.</li>
+  </ul>
+  <div class="hint">Dit is een samenvatting als geheugensteun, geen letterlijke wettekst &mdash; raadpleeg bij twijfel art. 47bis Wetboek van Strafvordering.</div>
+`;
 
 // Vervangt window.confirm(): die wordt geblokkeerd in de sandboxed iframe waarin dit
 // artifact draait (daar verschijnt nooit een popup en geeft confirm() altijd "false" terug,
@@ -2369,7 +2400,7 @@ function openDocDetail(doc, dossierObj, session){
           <div><div class="lbl">Ondervraagde</div><div class="val">${doc.ondervraagde || "&mdash;"} ${doc.hoedanigheid ? `<span class="chip chip-muted-light" style="margin-left:4px">${doc.hoedanigheid}</span>` : ""}</div></div>
         </div>
         <div class="pv-meta">
-          <div><div class="lbl">Cautie / rechten</div><div class="val">${doc.cautie ? `Voorgelezen${doc.cautieTijd ? " om " + doc.cautieTijd : ""}` : "Niet voorgelezen"}</div></div>
+          <div><div class="lbl">Rechten</div><div class="val">${doc.cautie ? `Ontvangen${doc.cautieTijd ? " om " + doc.cautieTijd : ""}` : "Niet ontvangen"}</div></div>
           <div><div class="lbl">Bijstand advocaat</div><div class="val">${doc.advocaat ? (doc.advocaatNaam || "Ja") : "Nee"}</div></div>
         </div>
         <div class="pv-body">
@@ -2634,7 +2665,7 @@ function docExportHtml(doc, dossierObj){
           <div><div class="lbl">Ondervraagde</div><div class="val">${doc.ondervraagde || "&mdash;"}${doc.hoedanigheid ? " (" + doc.hoedanigheid + ")" : ""}</div></div>
         </div>
         <div class="pv-meta">
-          <div><div class="lbl">Cautie / rechten</div><div class="val">${doc.cautie ? `Voorgelezen${doc.cautieTijd ? " om " + doc.cautieTijd : ""}` : "Niet voorgelezen"}</div></div>
+          <div><div class="lbl">Rechten</div><div class="val">${doc.cautie ? `Ontvangen${doc.cautieTijd ? " om " + doc.cautieTijd : ""}` : "Niet ontvangen"}</div></div>
           <div><div class="lbl">Bijstand advocaat</div><div class="val">${doc.advocaat ? (doc.advocaatNaam || "Ja") : "Nee"}</div></div>
         </div>
         <div class="pv-body">
@@ -3288,10 +3319,11 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
         </div>
       </div>
       <div class="field"><label>Eind-uur (optioneel)</label><input class="mono" id="fEindTijd" value="${state.eindTijd}" placeholder="UU:MM" maxlength="5"></div>
-      <div class="field">
-        <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fCautie" ${state.cautie ? "checked" : ""}> Cautie / rechten voorgelezen</label>
+      <div class="field" style="display:flex; align-items:center; justify-content:space-between; gap:10px">
+        <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fCautie" ${state.cautie ? "checked" : ""}> Rechten ontvangen</label>
+        <span class="hint" id="toonRechtenBtn" style="cursor:pointer;text-decoration:underline;white-space:nowrap">Bekijk standaardtekst</span>
       </div>
-      ${state.cautie ? `<div class="field"><label>Tijdstip voorlezen rechten</label><input class="mono" id="fCautieTijd" value="${state.cautieTijd}" placeholder="UU:MM" maxlength="5"></div>` : ""}
+      ${state.cautie ? `<div class="field"><label>Tijdstip rechten ontvangen</label><input class="mono" id="fCautieTijd" value="${state.cautieTijd}" placeholder="UU:MM" maxlength="5"></div>` : ""}
       <div class="field">
         <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fAdvocaat" ${state.advocaat ? "checked" : ""}> Bijstand advocaat</label>
       </div>
@@ -3317,6 +3349,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#fOndervraagde").addEventListener("input", (e) => { state.ondervraagde = e.target.value; });
     modalBody.querySelector("#fHoedanigheid").addEventListener("change", (e) => { state.hoedanigheid = e.target.value; });
     modalBody.querySelector("#fCautie").addEventListener("change", (e) => { state.cautie = e.target.checked; render_(); });
+    modalBody.querySelector("#toonRechtenBtn").addEventListener("click", () => openInfoPopup("Rechten bij verhoor", RECHTEN_STANDAARDTEKST));
     const cautieTijdEl = modalBody.querySelector("#fCautieTijd");
     if (cautieTijdEl) cautieTijdEl.addEventListener("input", (e) => { state.cautieTijd = fmtTimeInput(e.target.value); e.target.value = state.cautieTijd; });
     modalBody.querySelector("#fAdvocaat").addEventListener("change", (e) => { state.advocaat = e.target.checked; render_(); });
