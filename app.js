@@ -1961,7 +1961,10 @@ function dossierTijdlijn(d, session, showAddButton){
     addBtn.addEventListener("click", () => openDocTypePicker(d, session));
     wrap.appendChild(addBtn);
   }
-  const chronologisch = sortChronologisch(d.documenten, x => x.datum, x => x.tijd);
+  // Op het scherm tonen we nieuwste eerst (handig om snel de laatste stand van zaken te zien
+  // in een actief dossier); de PDF-export (genereerDossierExportHtml/genereerDocumentExportHtml)
+  // blijft wel chronologisch oud-naar-nieuw, zoals een PV als verhaal hoort te lezen.
+  const chronologisch = sortChronologisch(d.documenten, x => x.datum, x => x.tijd).reverse();
   chronologisch.forEach(doc => wrap.appendChild(docRow(doc, d, session)));
   if (!d.documenten.length) wrap.appendChild(el(`<div class="muted" style="font-size:13px">Nog geen documenten in dit dossier.</div>`));
   return wrap;
