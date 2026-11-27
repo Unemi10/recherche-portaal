@@ -2110,7 +2110,7 @@ function genereerDiscordMelding(doc, dossierObj){
   const laatsteAanvulling = (doc.aanvullingen || []).length ? doc.aanvullingen[doc.aanvullingen.length - 1] : null;
   const emoji = DISCORD_TYPE_EMOJI[doc.type] || "📋";
   const auteur = discordEscape(doc.auteur);
-  const meta = `**${doc.type}**${auteur ? " · " + auteur : ""} · ${doc.datum}${doc.tijd ? " " + doc.tijd : ""}`;
+  const meta = `**${doc.type}**${auteur ? " · " + auteur : ""} · ${datumTijdHtml(doc)}`;
   const kop = laatsteAanvulling ? `### 📝 ${dossierObj.naam} — aanvulling` : `### ${emoji} ${dossierObj.naam} — nieuw document`;
   const link = portaalLink(dossierObj, doc);
   return `${kop}\n${meta}\n[Bekijk in het portaal](${link})`;
