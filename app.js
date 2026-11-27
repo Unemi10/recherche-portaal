@@ -427,6 +427,62 @@ function magAanvullingBewerken(aanvulling, doc, session){
   if (aanvulling.auteurId !== undefined && aanvulling.auteurId !== null) return String(aanvulling.auteurId) === String(session.id);
   return !!aanvulling.auteur && aanvulling.auteur === session.naam;
 }
+// Wie mag een NIEUWE aanvulling toevoegen bij dit document? Admin en de auteur van het document
+// zelf mogen dat altijd. Bij een Algemeen verslag of Bijkomende informatie mag daarnaast eender
+// welk ingelogd lid aanvullen &mdash; dat zijn de "open" verslagtypes. Bij een specialisatieverslag
+// (OBN/CSI/GO) mag een lid enkel aanvullen als het ook effectief die specialisatie/rol heeft.
+// Bij Beschikbare resultaten, TAP-dossier en Bijstandsaanvraag blijft het beperkt tot admin/auteur:
+// dat zijn de "officiële" documenten waar niet zomaar iedereen aan mag toevoegen.
+function magAanvullingToevoegen(doc, session){
+  if (!session) return false;
+  if (magDocBewerken(doc, session)) return true;
+  if (doc.type === "Algemeen verslag" || doc.type === "Bijkomende informatie") return true;
+  if (doc.specialisatie) return (session.specialisaties || []).includes(doc.specialisatie);
+  return false;
+}
+// Herbruikbare HTML/wiring voor de aanvullingen-sectie, zodat elk documenttype dat aanvullingen
+// toelaat (Algemeen verslag, Bijkomende informatie, OBN/CSI/GO, en de admin/auteur-only types)
+// dezelfde weergave en dezelfde rechten-logica gebruikt.
+function aanvullingenSectieHtml(doc, session){
+  const aanvullingen = sortChronologisch(doc.aanvullingen || [], x => x.datum, x => x.tijd);
+  if (!aanvullingen.length) return "";
+  return `
+    <div class="hint" style="margin:16px 0 8px">Aanvullingen</div>
+    ${aanvullingen.map((a, i) => `
+      <div class="pv-loc">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
+          <div style="font-size:11px;color:#8a90a3">${a.datum} &middot; ${a.tijd || ""} ${a.auteur ? "&middot; " + a.auteur : ""}</div>
+          ${magAanvullingBewerken(a, doc, session) ? `<div style="display:flex;gap:10px;flex:0 0 auto">
+            <span class="aanv-edit" data-i="${i}" style="font-size:11px;color:var(--gold);cursor:pointer;font-weight:600">Bewerken</span>
+            <span class="aanv-del" data-i="${i}" style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600">Verwijderen</span>
+          </div>` : ""}
+        </div>
+        <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
+        ${fotosGalerijHtml(a.foto_s, "margin-top:10px")}
+      </div>`).join("")}
+  `;
+}
+function addAanvullingBtnHtml(doc, session){
+  return magAanvullingToevoegen(doc, session) ? `<button class="btn btn-ghost btn-sm" id="addAanvullingBtn">+ Aanvulling toevoegen</button>` : "";
+}
+function wireAanvullingenKnoppen(doc, dossierObj, session){
+  const aanvullingen = sortChronologisch(doc.aanvullingen || [], x => x.datum, x => x.tijd);
+  const addBtn = document.getElementById("addAanvullingBtn");
+  if (addBtn) addBtn.addEventListener("click", () => { closeModal(); openAanvullingForm(doc, dossierObj, session); });
+  document.querySelectorAll(".aanv-edit").forEach(span => span.addEventListener("click", () => {
+    closeModal();
+    openAanvullingForm(doc, dossierObj, session, aanvullingen[+span.dataset.i]);
+  }));
+  document.querySelectorAll(".aanv-del").forEach(span => span.addEventListener("click", () => {
+    const target = aanvullingen[+span.dataset.i];
+    confirmModal("Deze aanvulling verwijderen?", () => {
+      doc.aanvullingen = doc.aanvullingen.filter(x => x !== target);
+      logActiviteit(session, "Aanvulling verwijderd", dossierObj.naam);
+      DB.save(db);
+      openDocDetail(doc, dossierObj, session);
+    });
+  }));
+}
 // Leiding (admin of niet) en hoofdrechercheur mogen het Beheer-tabblad zien; binnen Beheer zelf
 // bepalen de specifieke functies verder wat ze precies mogen (zie beheerLeden/openMemberForm).
 function magBeheerZien(session){
@@ -2014,6 +2070,7 @@ function openDocDetail(doc, dossierObj, session){
         </table>
       </div>` : "";
     const fotosHtml = fotosGalerijHtml(doc.foto_s, "margin-top:14px");
+    const aanvullingenHtml = aanvullingenSectieHtml(doc, session);
     openModal(`
       <div class="modal-head"><h2>${doc.type}</h2><button class="modal-close" id="mClose">&times;</button></div>
       <div class="pv-doc">
@@ -2032,12 +2089,17 @@ function openDocDetail(doc, dossierObj, session){
           ${doc.bevindingen ? `<div class="pv-loc"><div class="lbl">Bevindingen</div><div class="verslag-tekst" style="margin-top:8px">${renderOpgemaakteTekst(doc.bevindingen)}</div></div>` : ""}
           ${rowsHtml}
           ${fotosHtml}
+          ${aanvullingenHtml}
         </div>
       </div>
-      ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+        ${addAanvullingBtnHtml(doc, session)}
+        ${canEdit ? `<button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button>` : ""}
+      </div>
     `, true);
     wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
+    wireAanvullingenKnoppen(doc, dossierObj, session);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openTussenkomstForm(dossierObj, session, doc.type, doc); });
@@ -2061,6 +2123,7 @@ function openDocDetail(doc, dossierObj, session){
         <div class="verslag-tekst" style="margin-bottom:${(l.foto_s && l.foto_s.length) ? "12px" : "0"}">${renderOpgemaakteTekst(l.tekst)}</div>
         ${fotosGalerijHtml(l.foto_s, "")}
       </div>`).join("");
+    const aanvullingenHtml = aanvullingenSectieHtml(doc, session);
     openModal(`
       <div class="modal-head"><h2>${doc.type}</h2><button class="modal-close" id="mClose">&times;</button></div>
       <div class="pv-doc">
@@ -2070,12 +2133,16 @@ function openDocDetail(doc, dossierObj, session){
           <div><div class="lbl">Opgesteld door</div><div class="val">${doc.auteur}</div></div>
           <div><div class="lbl">Aantal locaties</div><div class="val">${doc.locaties.length}</div></div>
         </div>
-        <div class="pv-body">${locsHtml}</div>
+        <div class="pv-body">${locsHtml}${aanvullingenHtml}</div>
       </div>
-      ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+        ${addAanvullingBtnHtml(doc, session)}
+        ${canEdit ? `<button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button>` : ""}
+      </div>
     `, true);
     wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
+    wireAanvullingenKnoppen(doc, dossierObj, session);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openVerslagForm(dossierObj, session, doc.type, doc); });
@@ -2105,6 +2172,7 @@ function openDocDetail(doc, dossierObj, session){
         ${fotosHtml}
       </div>`;
     }).join("");
+    const aanvullingenHtml = aanvullingenSectieHtml(doc, session);
     openModal(`
       <div class="modal-head"><h2>${doc.type}</h2><button class="modal-close" id="mClose">&times;</button></div>
       <div class="pv-doc">
@@ -2117,13 +2185,18 @@ function openDocDetail(doc, dossierObj, session){
         <div class="pv-body">
           ${doc.titel ? `<div style="font-size:14px;font-weight:700;margin-bottom:10px">${doc.titel}</div>` : ""}
           ${sectiesHtml}
+          ${aanvullingenHtml}
           ${linkLine}
         </div>
       </div>
-      ${canEdit ? `<div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button></div>` : ""}
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+        ${addAanvullingBtnHtml(doc, session)}
+        ${canEdit ? `<button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button><button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button>` : ""}
+      </div>
     `, true);
     wireFotosGalerij(document.getElementById("modal-root"));
     document.getElementById("mClose").addEventListener("click", closeModal);
+    wireAanvullingenKnoppen(doc, dossierObj, session);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openSimpleDocForm(dossierObj, session, doc.type, doc); });
@@ -2194,21 +2267,7 @@ function openDocDetail(doc, dossierObj, session){
         </table>
       </div>` : "";
     const aanvullingen = sortChronologisch(doc.aanvullingen || [], x => x.datum, x => x.tijd);
-    const aanvullingenHtml = aanvullingen.length ? `
-      <div class="hint" style="margin:16px 0 8px">Aanvullingen</div>
-      ${aanvullingen.map((a, i) => `
-        <div class="pv-loc">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
-            <div style="font-size:11px;color:#8a90a3">${a.datum} &middot; ${a.tijd || ""} ${a.auteur ? "&middot; " + a.auteur : ""}</div>
-            ${magAanvullingBewerken(a, doc, session) ? `<div style="display:flex;gap:10px;flex:0 0 auto">
-              <span class="aanv-edit" data-i="${i}" style="font-size:11px;color:var(--gold);cursor:pointer;font-weight:600">Bewerken</span>
-              <span class="aanv-del" data-i="${i}" style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600">Verwijderen</span>
-            </div>` : ""}
-          </div>
-          <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
-          ${fotosGalerijHtml(a.foto_s, "margin-top:10px")}
-        </div>`).join("")}
-    ` : "";
+    const aanvullingenHtml = aanvullingenSectieHtml(doc, session);
     const linkLine = doc.externLink ? `<div style="margin-top:16px"><a href="${doc.externLink}" target="_blank" rel="noopener">Externe link &rarr;</a></div>` : "";
     openModal(`
       <div class="modal-head"><h2>${doc.type}</h2><button class="modal-close" id="mClose">&times;</button></div>
@@ -2231,7 +2290,7 @@ function openDocDetail(doc, dossierObj, session){
       </div>
       <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
         ${doc.type === "Bijstandsaanvraag" ? `<button class="btn btn-ghost btn-sm" id="exportDocBtn" title="Dit document apart als PDF exporteren, bv. om door te sturen naar een andere eenheid">Exporteer (PDF)</button>` : ""}
-        ${session ? `<button class="btn btn-ghost btn-sm" id="addAanvullingBtn">+ Aanvulling toevoegen</button>` : ""}
+        ${addAanvullingBtnHtml(doc, session)}
         ${canEdit ? `<button class="btn btn-ghost btn-sm" id="copyDiscordBtn">Kopieer Discord-melding</button>` : ""}
         ${canEdit ? `<button class="btn btn-gold btn-sm" id="editDocBtn">Bewerken</button><button class="btn btn-danger btn-sm" id="delDocBtn">Verwijderen</button>` : ""}
       </div>
@@ -2241,22 +2300,7 @@ function openDocDetail(doc, dossierObj, session){
     if (doc.type === "Bijstandsaanvraag"){
       document.getElementById("exportDocBtn").addEventListener("click", () => exporteerDocumentAlsPdf(doc, dossierObj));
     }
-    if (session){
-      document.getElementById("addAanvullingBtn").addEventListener("click", () => { closeModal(); openAanvullingForm(doc, dossierObj, session); });
-      document.querySelectorAll(".aanv-edit").forEach(span => span.addEventListener("click", () => {
-        closeModal();
-        openAanvullingForm(doc, dossierObj, session, aanvullingen[+span.dataset.i]);
-      }));
-      document.querySelectorAll(".aanv-del").forEach(span => span.addEventListener("click", () => {
-        const target = aanvullingen[+span.dataset.i];
-        confirmModal("Deze aanvulling verwijderen?", () => {
-          doc.aanvullingen = doc.aanvullingen.filter(x => x !== target);
-          logActiviteit(session, "Aanvulling verwijderd", dossierObj.naam);
-          DB.save(db);
-          openDocDetail(doc, dossierObj, session);
-        });
-      }));
-    }
+    wireAanvullingenKnoppen(doc, dossierObj, session);
     if (canEdit){
       document.getElementById("copyDiscordBtn").addEventListener("click", (e) => copyToClipboard(genereerDiscordMelding(doc, dossierObj), e.target));
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openResultatenForm(dossierObj, session, doc.type, doc); });
@@ -2335,6 +2379,7 @@ function docExportHtml(doc, dossierObj){
           </div>
           ${doc.bevindingen ? `<div class="pv-loc"><div class="lbl">Bevindingen</div><div class="verslag-tekst" style="margin-top:8px">${renderOpgemaakteTekst(doc.bevindingen)}</div></div>` : ""}
           ${rowsHtml}
+          ${aanvullingenSectieHtml(doc)}
         </div>
       </div>`;
   }
@@ -2354,7 +2399,7 @@ function docExportHtml(doc, dossierObj){
           <div><div class="lbl">Opgesteld door</div><div class="val">${doc.auteur}</div></div>
           <div><div class="lbl">Aantal locaties</div><div class="val">${doc.locaties.length}</div></div>
         </div>
-        <div class="pv-body">${locsHtml}</div>
+        <div class="pv-body">${locsHtml}${aanvullingenSectieHtml(doc)}</div>
       </div>`;
   }
   if (SIMPLE_DOC_TYPES.includes(doc.type)){
@@ -2384,6 +2429,7 @@ function docExportHtml(doc, dossierObj){
         <div class="pv-body">
           ${doc.titel ? `<div style="font-size:14px;font-weight:700;margin-bottom:10px">${doc.titel}</div>` : ""}
           ${sectiesHtml}
+          ${aanvullingenSectieHtml(doc)}
           ${linkLine}
         </div>
       </div>`;
