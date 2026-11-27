@@ -4166,7 +4166,9 @@ function openMemberForm(member, viewerSession){
 // hoe vaak ze als "aanwezig" aangeduid staan &mdash; over alle dossiers heen. Auteur/aanvulling
 // worden gematcht op naam (zoals overal in de app, een momentopname bij het opstellen); aanwezig
 // wordt gematcht op lid-ID (blijft dus kloppen ook na een naamswijziging).
-function computeMemberStats(){
+// dossierId: optioneel &mdash; als meegegeven, tellen enkel documenten/aanvullingen/aanwezigheden
+// van dát ene dossier mee (zie beheerStatistieken-filter), anders over alle dossiers heen.
+function computeMemberStats(dossierId){
   // byNaam loopt over ALLE leden (ook verborgen), anders klopt de matching niet meer zodra een
   // verborgen lid ooit een document/aanvulling opstelde; stats zelf bevat enkel zichtbare leden,
   // dus die bijdrages tellen simpelweg niet mee in de (zichtbare) statistieken hieronder.
@@ -4174,7 +4176,8 @@ function computeMemberStats(){
   db.members.forEach(m => { byNaam[m.naam] = m.id; });
   const stats = {};
   zichtbareLeden().forEach(m => { stats[m.id] = { member: m, documenten: 0, aanvullingen: 0, aanwezig: 0 }; });
-  db.dossiers.forEach(d => {
+  const dossiersVoorStats = dossierId ? db.dossiers.filter(d => d.id === dossierId) : db.dossiers;
+  dossiersVoorStats.forEach(d => {
     (d.documenten || []).forEach(doc => {
       if (doc.auteur && byNaam[doc.auteur] !== undefined && stats[byNaam[doc.auteur]]) stats[byNaam[doc.auteur]].documenten++;
       (doc.aanvullingen || []).forEach(a => {
@@ -4188,7 +4191,7 @@ function computeMemberStats(){
 // Telt het aantal documenten per brede categorie (niet per los type, anders wordt een taartdiagram
 // met 10 flinterdunne taartpunten onleesbaar). Een "Melding" telt bewust niet mee in deze grafiek
 // &mdash; dat is geen eigen werk van een lid, maar het vertrekpunt van het dossier.
-function computeDocKindStats(){
+function computeDocKindStats(dossierId){
   const tellingen = {
     "Algemene verslagen & bijkomende informatie": 0,
     "Verslagen (OBN, CSI en GO)": 0,
@@ -4196,7 +4199,8 @@ function computeDocKindStats(){
     "Bijstandsaanvragen": 0,
     "Beschikbare resultaten & TAP-dossier": 0
   };
-  db.dossiers.forEach(d => (d.documenten || []).forEach(doc => {
+  const dossiersVoorStats = dossierId ? db.dossiers.filter(d => d.id === dossierId) : db.dossiers;
+  dossiersVoorStats.forEach(d => (d.documenten || []).forEach(doc => {
     if (doc.type === "Melding") return;
     if (doc.type === "Algemeen verslag" || doc.type === "Bijkomende informatie") tellingen["Algemene verslagen & bijkomende informatie"]++;
     else if (doc.type === "OBN-verslag" || doc.type === "CSI-verslag" || doc.type === "GO-verslag") tellingen["Verslagen (OBN, CSI en GO)"]++;
@@ -4268,13 +4272,22 @@ function barChartHtml(title, rows, getValue){
     </div>`;
 }
 function beheerStatistieken(session){
-  const stats = computeMemberStats();
-  const totaalDossiers = db.dossiers.length;
-  const totaalOpen = db.dossiers.filter(d => d.status === "open").length;
-  const totaalDocumenten = db.dossiers.reduce((sum, d) => sum + (d.documenten || []).length, 0);
+  // Optioneel filter op één dossier (zie dropdown hieronder); view.statistiekenDossierId blijft
+  // bewaard in de globale "view" zodat de keuze overeind blijft bij een her-render (bv. na een
+  // Firestore-synchronisatie), net zoals view.dossierTab dat doet voor het dossier-tabblad.
+  const geselecteerdDossierId = view.statistiekenDossierId || "";
+  const gefilterdDossier = geselecteerdDossierId ? db.dossiers.find(d => d.id === geselecteerdDossierId) : null;
+  // Als het geselecteerde dossier intussen verwijderd is, terugvallen op "Alle dossiers".
+  const actieveDossierId = gefilterdDossier ? geselecteerdDossierId : "";
+
+  const stats = computeMemberStats(actieveDossierId || undefined);
+  const totaalDossiers = gefilterdDossier ? 1 : db.dossiers.length;
+  const totaalOpen = gefilterdDossier ? (gefilterdDossier.status === "open" ? 1 : 0) : db.dossiers.filter(d => d.status === "open").length;
+  const dossiersVoorTotaal = gefilterdDossier ? [gefilterdDossier] : db.dossiers;
+  const totaalDocumenten = dossiersVoorTotaal.reduce((sum, d) => sum + (d.documenten || []).length, 0);
   const totaalActief = zichtbareLeden().filter(m => (m.status || "Actief") === "Actief").length;
 
-  const docKindStats = computeDocKindStats();
+  const docKindStats = computeDocKindStats(actieveDossierId || undefined);
   const docKindSegments = [
     { label: "Algemene verslagen &amp; bijkomende informatie", value: docKindStats["Algemene verslagen & bijkomende informatie"], color: "var(--gold)" },
     { label: "Verslagen (OBN, CSI en GO)", value: docKindStats["Verslagen (OBN, CSI en GO)"], color: "var(--blue)" },
@@ -4290,20 +4303,30 @@ function beheerStatistieken(session){
     { label: "Verlof", value: statusCounts.Verlof, color: "var(--blue)" }
   ];
 
+  // Dossiers alfabetisch in de dropdown, los van hun volgorde in de lijstweergave.
+  const dossierOpties = db.dossiers.slice().sort((a, b) => a.naam.localeCompare(b.naam, "nl"));
+
   const wrap = el(`<div>
     <div class="hint" style="margin-bottom:16px">
       Aantal documenten/aanvullingen is wie het meeste opstelt of aanvult; aanwezigheid is wie fysiek bij een actie betrokken was &mdash; dit zijn twee verschillende dingen, geen rangschikking van "inzet".
+    </div>
+    <div class="field" style="max-width:360px;margin-bottom:16px">
+      <label>Filter op dossier</label>
+      <select id="statFilterDossier">
+        <option value="">Alle dossiers</option>
+        ${dossierOpties.map(d => `<option value="${d.id}" ${actieveDossierId === d.id ? "selected" : ""}>${d.naam}</option>`).join("")}
+      </select>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:18px">
       <div class="card" style="text-align:center">
         <div class="lbl" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Dossiers</div>
         <div style="font-size:22px;font-weight:700">${totaalDossiers}</div>
-        <div class="muted" style="font-size:11px">${totaalOpen} open</div>
+        <div class="muted" style="font-size:11px">${gefilterdDossier ? (gefilterdDossier.status === "open" ? "open" : "gesloten") : totaalOpen + " open"}</div>
       </div>
       <div class="card" style="text-align:center">
         <div class="lbl" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Documenten</div>
         <div style="font-size:22px;font-weight:700">${totaalDocumenten}</div>
-        <div class="muted" style="font-size:11px">over alle dossiers</div>
+        <div class="muted" style="font-size:11px">${gefilterdDossier ? "in " + gefilterdDossier.naam : "over alle dossiers"}</div>
       </div>
       <div class="card" style="text-align:center">
         <div class="lbl" style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Actieve leden</div>
@@ -4338,6 +4361,10 @@ function beheerStatistieken(session){
       </table>
     </div>
   </div>`);
+  wrap.querySelector("#statFilterDossier").addEventListener("change", (e) => {
+    view.statistiekenDossierId = e.target.value || null;
+    render();
+  });
   return wrap;
 }
 
