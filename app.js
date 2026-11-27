@@ -2113,7 +2113,7 @@ function genereerDiscordMelding(doc, dossierObj){
   const meta = `**${doc.type}**${auteur ? " · " + auteur : ""} · ${doc.datum}${doc.tijd ? " " + doc.tijd : ""}`;
   const kop = laatsteAanvulling ? `### 📝 ${dossierObj.naam} — aanvulling` : `### ${emoji} ${dossierObj.naam} — nieuw document`;
   const link = portaalLink(dossierObj, doc);
-  return `${kop}\n${meta}\n[👉 Bekijk in het portaal](${link})`;
+  return `${kop}\n${meta}\n[Bekijk in het portaal](${link})`;
 }
 function copyToClipboard(tekst, btn){
   const toon = (ok) => {
