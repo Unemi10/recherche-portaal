@@ -253,7 +253,13 @@ function migrateDb(data){
     if (!d.bewijs) d.bewijs = [];
     if (!d.documenten) d.documenten = [];
     if (!d.acties) d.acties = [];
+    // Zelfde reden als bij betrokkenen hierboven: vast, uniek ID voor elk voertuig.
+    d.voertuigen.forEach(v => { if (!v.id) v.id = genereerVoertuigId(); });
     d.betrokkenen.forEach(b => {
+      // Vast, uniek ID zodat een betrokkene nog teruggevonden kan worden bij het bewerken/
+      // verwijderen, ook als de databoom intussen door een nieuwe Firestore-synchronisatie
+      // vervangen is (zelfde reden als bij aanvullingen, zie vindLeefBetrokkene).
+      if (!b.id) b.id = genereerBetrokkeneId();
       if (b.signalement === undefined) b.signalement = "";
       // De oude "Foto beschikbaar (plaatshouder)"-checkbox wordt een echte foto-teller, zoals
       // elders in de app (OBN/CSI/Bijstandsaanvraag): true wordt 1 foto, anders 0.
@@ -520,6 +526,23 @@ function vindLeefDoc(dossierId, docId){
   const doc = (dossierObj.documenten || []).find(x => x.id === docId);
   return doc ? { dossierObj, doc } : null;
 }
+// Zelfde reden/patroon als vindLeefDoc hierboven, maar dan voor een betrokkene of voertuig.
+function vindLeefBetrokkene(dossierId, betrokkeneId){
+  const dossierObj = vindLeefDossier(dossierId);
+  if (!dossierObj) return null;
+  const betrokkene = (dossierObj.betrokkenen || []).find(x => x.id === betrokkeneId);
+  return betrokkene ? { dossierObj, betrokkene } : null;
+}
+function vindLeefVoertuig(dossierId, voertuigId){
+  const dossierObj = vindLeefDossier(dossierId);
+  if (!dossierObj) return null;
+  const voertuig = (dossierObj.voertuigen || []).find(x => x.id === voertuigId);
+  return voertuig ? { dossierObj, voertuig } : null;
+}
+// Zelfde reden/patroon, maar voor een lid (db.members zit niet onder een dossier).
+function vindLeefMember(memberId){
+  return db.members.find(x => x.id === memberId) || null;
+}
 function wireAanvullingenKnoppen(doc, dossierObj, session){
   const dossierId = dossierObj.id, docId = doc.id;
   const addBtn = document.getElementById("addAanvullingBtn");
@@ -618,6 +641,39 @@ function fmtTimeInput(raw){
   let out = d.slice(0, 2);
   if (d.length > 2) out += ":" + d.slice(2, 4);
   return out;
+}
+// Controleert of een datum-string een volledig ingetypte, kalenderkundig bestaande DD/MM/JJJJ-
+// datum is (dus geen 31/02, geen 00/00, geen jaartal buiten een redelijk bereik). Een lege string
+// is toegestaan: veel datumvelden zijn optioneel en worden bij opslaan de placeholder "&ndash;".
+// Een onvolledig ingetypte datum (bv. nog maar "12/3") is wél ongeldig: die mag niet stilletjes
+// als "12/03/....." bewaard worden.
+function datumIsGeldig(str){
+  const s = String(str || "").trim();
+  if (!s) return true;
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+  if (!m) return false;
+  const dd = +m[1], mm = +m[2], yyyy = +m[3];
+  if (yyyy < 1900 || yyyy > 2200) return false;
+  const dt = new Date(yyyy, mm - 1, dd);
+  return dt.getFullYear() === yyyy && dt.getMonth() === mm - 1 && dt.getDate() === dd;
+}
+// Zelfde soort controle voor UU:MM (uren 00-23, minuten 00-59). Ook hier is leeg toegestaan.
+function tijdIsGeldig(str){
+  const s = String(str || "").trim();
+  if (!s) return true;
+  const m = /^(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return false;
+  const hh = +m[1], mi = +m[2];
+  return hh <= 23 && mi <= 59;
+}
+// Zet live een rode rand op een datum/tijd-veld zodra de ingetypte waarde volledig lijkt
+// (8 cijfers voor een datum, 4 voor een tijd) maar toch ongeldig is &mdash; blokkeert het typen
+// zelf niet. Het echte tegenhouden van opslaan gebeurt per formulier met datumIsGeldig/tijdIsGeldig.
+function markeerVeldGeldigheid(input, waarde, isGeldigFn){
+  const cijfers = String(waarde || "").replace(/[^0-9]/g, "").length;
+  const verwacht = isGeldigFn === tijdIsGeldig ? 4 : 8;
+  const toonFout = cijfers >= verwacht && !isGeldigFn(waarde);
+  input.classList.toggle("veld-ongeldig", toonFout);
 }
 // Zet DD/MM/JJJJ (+ optioneel UU:MM) om in een sorteerbare sleutel; onbekende/placeholder-datums (bv. "&ndash;")
 // komen achteraan terecht, zodat items met een echte datum altijd chronologisch vooraan staan.
@@ -790,6 +846,15 @@ function genereerFotoId(){
 // vindLeefDoc/openAanvullingForm waarom dit nodig is).
 function genereerAanvullingId(){
   return "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+// Zelfde soort unieke ID's, voor betrokkenen/voertuigen (zie vindLeefBetrokkene/vindLeefVoertuig
+// hierboven): die hadden voordien geen eigen ID en werden enkel via array-referentie herkend,
+// wat kwetsbaar is voor dezelfde "stale db"-opslagbug als bij aanvullingen.
+function genereerBetrokkeneId(){
+  return "b" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function genereerVoertuigId(){
+  return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 // Leest een gekozen bestand in, tekent het verkleind op een canvas en levert het resultaat als
 // JPEG-base64 op (ruim voldoende leesbaar voor een dossier, maar typisch maar enkele tientallen
@@ -1757,6 +1822,10 @@ function dossierOverzichtTijdlijn(d, session){
 // gewone leden (rol "lid") zien de lijst enkel.
 function renderActiesCard(container, d, session){
   const canBeheer = !!(session && session.rol === "leiding");
+  // Zie openSimpleDocForm hierboven: dit kaartje kan een tijdje zichtbaar blijven (bv. terwijl
+  // iemand een nieuwe actie staat te typen) zonder dat de hele pagina opnieuw rendert, dus bij
+  // elke mutatie hieronder altijd het live dossier via zijn ID opnieuw opzoeken.
+  const dossierId = d.id;
   let toonVoltooid = false;
   function render_(){
     const acties = d.acties || [];
@@ -1807,19 +1876,23 @@ function renderActiesCard(container, d, session){
     const toggleBtn = container.querySelector("#toggleVoltooid");
     if (toggleBtn) toggleBtn.addEventListener("click", () => { toonVoltooid = !toonVoltooid; render_(); });
     container.querySelectorAll(".actie-check").forEach(cb => cb.addEventListener("change", (e) => {
-      const a = (d.acties || []).find(x => x.id === e.target.dataset.id);
+      const liveDossierObj = vindLeefDossier(dossierId);
+      if (!liveDossierObj){ render(); return; }
+      const a = (liveDossierObj.acties || []).find(x => x.id === e.target.dataset.id);
       if (!a) return;
       a.voltooid = e.target.checked;
-      logActiviteit(session, `Actie ${a.voltooid ? "afgevinkt" : "heropend"}: "${a.tekst}"`, d.naam);
+      logActiviteit(session, `Actie ${a.voltooid ? "afgevinkt" : "heropend"}: "${a.tekst}"`, liveDossierObj.naam);
       DB.save(db);
       render_();
     }));
     container.querySelectorAll(".actie-del").forEach(btn => btn.addEventListener("click", () => {
       const id = btn.dataset.id;
       confirmModal("Deze actie verwijderen?", () => {
-        const a = (d.acties || []).find(x => x.id === id);
-        d.acties = (d.acties || []).filter(x => x.id !== id);
-        logActiviteit(session, `Actie verwijderd: "${a ? a.tekst : ""}"`, d.naam);
+        const liveDossierObj = vindLeefDossier(dossierId);
+        if (!liveDossierObj){ render(); return; }
+        const a = (liveDossierObj.acties || []).find(x => x.id === id);
+        liveDossierObj.acties = (liveDossierObj.acties || []).filter(x => x.id !== id);
+        logActiviteit(session, `Actie verwijderd: "${a ? a.tekst : ""}"`, liveDossierObj.naam);
         DB.save(db);
         render_();
       });
@@ -1829,9 +1902,11 @@ function renderActiesCard(container, d, session){
       const input = container.querySelector("#fNieuweActie");
       const tekst = input.value.trim();
       if (!tekst) return;
+      const liveDossierObj = vindLeefDossier(dossierId);
+      if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); render(); return; }
       const toegewezenRaw = container.querySelector("#fActieToegewezen").value;
-      if (!d.acties) d.acties = [];
-      d.acties.push({
+      if (!liveDossierObj.acties) liveDossierObj.acties = [];
+      liveDossierObj.acties.push({
         id: "act" + (db.nextActieId++),
         tekst,
         voltooid: false,
@@ -1839,7 +1914,7 @@ function renderActiesCard(container, d, session){
         aangemaaktDoor: session.naam,
         aangemaaktOp: nuAlsDatum()
       });
-      logActiviteit(session, `Actie toegevoegd: "${tekst}"`, d.naam);
+      logActiviteit(session, `Actie toegevoegd: "${tekst}"`, liveDossierObj.naam);
       DB.save(db);
       render_();
     });
@@ -1856,6 +1931,8 @@ function slugifyDossierNaam(naam){
 
 function openOverzichtForm(d){
   const isNew = !d;
+  // Zie openSimpleDocForm verderop: enkel het ID bewaren, bij opslaan/verwijderen altijd live opzoeken.
+  const dossierId = d ? d.id : null;
   const obj = d || { id: null, naam: "", typeDelict: "", status: "open", verantwoordelijke: "", datumGeopend: "", samenvatting: "", opsporing: false, betrokkenen: [], voertuigen: [], bewijs: [], documenten: [], acties: [] };
   openModal(`
     <div class="modal-head"><h2>${isNew ? "Nieuw dossier" : "Dossier bewerken"}</h2><button class="modal-close" id="mClose">&times;</button></div>
@@ -1879,7 +1956,7 @@ function openOverzichtForm(d){
     </div>
   `);
   document.getElementById("mClose").addEventListener("click", closeModal);
-  document.getElementById("fDatum").addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); });
+  document.getElementById("fDatum").addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); markeerVeldGeldigheid(e.target, e.target.value, datumIsGeldig); });
   maakOpmaakToolbar(document.getElementById("fSamenv"));
   document.getElementById("saveOverzicht").addEventListener("click", () => {
     const naam = document.getElementById("fNaam").value.trim();
@@ -1890,6 +1967,7 @@ function openOverzichtForm(d){
     const datumGeopend = document.getElementById("fDatum").value.trim();
     const samenvatting = document.getElementById("fSamenv").value.trim();
     const opsporing = document.getElementById("fOpsporing").checked;
+    if (!datumIsGeldig(datumGeopend)){ alert("Datum geopend is geen geldige datum (DD/MM/JJJJ)."); return; }
     if (isNew){
       db.dossiers.push({
         id: slugifyDossierNaam(naam), naam, typeDelict, status, verantwoordelijke, datumGeopend, samenvatting, opsporing,
@@ -1897,9 +1975,11 @@ function openOverzichtForm(d){
       });
       logActiviteit(getSession(), `Dossier aangemaakt: "${naam}"`, naam);
     } else {
-      obj.naam = naam; obj.typeDelict = typeDelict; obj.status = status;
-      obj.verantwoordelijke = verantwoordelijke; obj.datumGeopend = datumGeopend; obj.samenvatting = samenvatting;
-      obj.opsporing = opsporing;
+      const liveObj = vindLeefDossier(dossierId);
+      if (!liveObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      liveObj.naam = naam; liveObj.typeDelict = typeDelict; liveObj.status = status;
+      liveObj.verantwoordelijke = verantwoordelijke; liveObj.datumGeopend = datumGeopend; liveObj.samenvatting = samenvatting;
+      liveObj.opsporing = opsporing;
     }
     DB.save(db);
     closeModal();
@@ -1908,9 +1988,11 @@ function openOverzichtForm(d){
   if (!isNew){
     document.getElementById("deleteDossier").addEventListener("click", () => {
       confirmModal(`Dossier "${obj.naam}" volledig verwijderen? Dit kan niet ongedaan gemaakt worden.`, () => {
-        fotoIdsVanDossier(obj).forEach(verwijderFoto);
-        db.dossiers = db.dossiers.filter(x => x !== obj);
-        logActiviteit(getSession(), `Dossier verwijderd: "${obj.naam}"`, obj.naam);
+        const liveObj = vindLeefDossier(dossierId);
+        if (!liveObj){ go("dossiers"); return; }
+        fotoIdsVanDossier(liveObj).forEach(verwijderFoto);
+        db.dossiers = db.dossiers.filter(x => x.id !== dossierId);
+        logActiviteit(getSession(), `Dossier verwijderd: "${liveObj.naam}"`, liveObj.naam);
         DB.save(db);
         go("dossiers");
       });
@@ -2040,6 +2122,7 @@ function dossierBetrokkenen(d, session){
   // Bewerken/verwijderen van een bestaande betrokkene blijft admin-only, maar elk ingelogd lid mag
   // een nieuwe betrokkene toevoegen (bv. na een vaststelling of tussenkomst).
   const canEdit = isAdmin(session);
+  const dossierId = d.id;
   const wrap = el(`<div></div>`);
   const addBtn = el(`<button class="btn btn-gold btn-sm" style="margin-bottom:16px">+ Betrokkene toevoegen</button>`);
   addBtn.addEventListener("click", () => openBetrokkeneForm(d, null));
@@ -2062,11 +2145,17 @@ function dossierBetrokkenen(d, session){
     </div>`);
     wireFotosGalerij(row);
     if (canEdit){
-      row.querySelector(".edit-b").addEventListener("click", () => openBetrokkeneForm(d, b));
+      row.querySelector(".edit-b").addEventListener("click", () => {
+        const live = vindLeefBetrokkene(dossierId, b.id);
+        if (!live){ render(); return; }
+        openBetrokkeneForm(live.dossierObj, live.betrokkene);
+      });
       row.querySelector(".del-b").addEventListener("click", () => {
         confirmModal("Deze betrokkene verwijderen?", () => {
-          (b.fotos || []).forEach(verwijderFoto);
-          d.betrokkenen = d.betrokkenen.filter(x => x !== b);
+          const live = vindLeefBetrokkene(dossierId, b.id);
+          if (!live){ render(); return; }
+          (live.betrokkene.fotos || []).forEach(verwijderFoto);
+          live.dossierObj.betrokkenen = live.dossierObj.betrokkenen.filter(x => x.id !== b.id);
           DB.save(db); render();
         });
       });
@@ -2078,6 +2167,9 @@ function dossierBetrokkenen(d, session){
 
 function openBetrokkeneForm(d, betrokkene){
   pendingVerwijderdeFotoIds = [];
+  // Zie openSimpleDocForm hierboven: enkel ID's bewaren, bij opslaan altijd live opzoeken.
+  const dossierId = d.id;
+  const betrokkeneId = betrokkene ? betrokkene.id : null;
   const isNew = !betrokkene;
   const b = betrokkene || { naam: "", detail: "", tag: "Verdachte", tagClass: "chip-wanted", signalement: "", fotos: [] };
   const state = { fotos: (b.fotos || []).slice() };
@@ -2114,16 +2206,27 @@ function openBetrokkeneForm(d, betrokkene){
     const signalement = document.getElementById("fSignalement").value.trim();
     const fotos = state.fotos;
     if (!naam) return;
-    if (isNew){ d.betrokkenen.push({ naam, detail, tag, tagClass, signalement, fotos }); logActiviteit(getSession(), `Betrokkene toegevoegd: "${naam}"`, d.naam); }
-    else { betrokkene.naam = naam; betrokkene.detail = detail; betrokkene.tag = tag; betrokkene.tagClass = tagClass; betrokkene.signalement = signalement; betrokkene.fotos = fotos; }
+    if (isNew){
+      const liveDossierObj = vindLeefDossier(dossierId);
+      if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      liveDossierObj.betrokkenen.push({ id: genereerBetrokkeneId(), naam, detail, tag, tagClass, signalement, fotos });
+      logActiviteit(getSession(), `Betrokkene toegevoegd: "${naam}"`, liveDossierObj.naam);
+    } else {
+      const live = vindLeefBetrokkene(dossierId, betrokkeneId);
+      if (!live){ alert("Deze betrokkene bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      const liveB = live.betrokkene;
+      liveB.naam = naam; liveB.detail = detail; liveB.tag = tag; liveB.tagClass = tagClass; liveB.signalement = signalement; liveB.fotos = fotos;
+    }
     flushPendingVerwijderdeFotoIds();
     DB.save(db); closeModal(); render();
   });
   if (!isNew){
     document.getElementById("delB").addEventListener("click", () => {
-      (betrokkene.fotos || []).forEach(verwijderFoto);
-      d.betrokkenen = d.betrokkenen.filter(x => x !== betrokkene);
-      logActiviteit(getSession(), `Betrokkene verwijderd: "${betrokkene.naam}"`, d.naam);
+      const live = vindLeefBetrokkene(dossierId, betrokkeneId);
+      if (!live){ closeModal(); render(); return; }
+      (live.betrokkene.fotos || []).forEach(verwijderFoto);
+      live.dossierObj.betrokkenen = live.dossierObj.betrokkenen.filter(x => x.id !== betrokkeneId);
+      logActiviteit(getSession(), `Betrokkene verwijderd: "${live.betrokkene.naam}"`, live.dossierObj.naam);
       DB.save(db); closeModal(); render();
     });
   }
@@ -2135,6 +2238,7 @@ function openBetrokkeneForm(d, betrokkene){
 // een document zijn auteur op naam bijhoudt &mdash; er bestaat geen apart id-systeem voor betrokkenen).
 function dossierVoertuigen(d, session){
   const canEdit = isAdmin(session);
+  const dossierId = d.id;
   const wrap = el(`<div></div>`);
   const addBtn = el(`<button class="btn btn-gold btn-sm" style="margin-bottom:16px">+ Voertuig toevoegen</button>`);
   addBtn.addEventListener("click", () => openVoertuigForm(d, null));
@@ -2157,11 +2261,17 @@ function dossierVoertuigen(d, session){
     </div>`);
     wireFotosGalerij(row);
     if (canEdit){
-      row.querySelector(".edit-v").addEventListener("click", () => openVoertuigForm(d, v));
+      row.querySelector(".edit-v").addEventListener("click", () => {
+        const live = vindLeefVoertuig(dossierId, v.id);
+        if (!live){ render(); return; }
+        openVoertuigForm(live.dossierObj, live.voertuig);
+      });
       row.querySelector(".del-v").addEventListener("click", () => {
         confirmModal("Dit voertuig verwijderen?", () => {
-          (v.fotos || []).forEach(verwijderFoto);
-          d.voertuigen = d.voertuigen.filter(x => x !== v);
+          const live = vindLeefVoertuig(dossierId, v.id);
+          if (!live){ render(); return; }
+          (live.voertuig.fotos || []).forEach(verwijderFoto);
+          live.dossierObj.voertuigen = live.dossierObj.voertuigen.filter(x => x.id !== v.id);
           DB.save(db); render();
         });
       });
@@ -2173,6 +2283,9 @@ function dossierVoertuigen(d, session){
 
 function openVoertuigForm(d, voertuig){
   pendingVerwijderdeFotoIds = [];
+  // Zie openSimpleDocForm hierboven: enkel ID's bewaren, bij opslaan altijd live opzoeken.
+  const dossierId = d.id;
+  const voertuigId = voertuig ? voertuig.id : null;
   const isNew = !voertuig;
   const v = voertuig || { kenteken: "", merkModel: "", kleur: "", betrokkeneNaam: "", notities: "", fotos: [] };
   const state = { fotos: (v.fotos || []).slice() };
@@ -2210,16 +2323,27 @@ function openVoertuigForm(d, voertuig){
     const notities = document.getElementById("fNotities").value.trim();
     const fotos = state.fotos;
     if (!kenteken && !merkModel) return;
-    if (isNew){ d.voertuigen.push({ kenteken, merkModel, kleur, betrokkeneNaam, notities, fotos }); logActiviteit(getSession(), `Voertuig toegevoegd: "${kenteken || merkModel}"`, d.naam); }
-    else { voertuig.kenteken = kenteken; voertuig.merkModel = merkModel; voertuig.kleur = kleur; voertuig.betrokkeneNaam = betrokkeneNaam; voertuig.notities = notities; voertuig.fotos = fotos; }
+    if (isNew){
+      const liveDossierObj = vindLeefDossier(dossierId);
+      if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      liveDossierObj.voertuigen.push({ id: genereerVoertuigId(), kenteken, merkModel, kleur, betrokkeneNaam, notities, fotos });
+      logActiviteit(getSession(), `Voertuig toegevoegd: "${kenteken || merkModel}"`, liveDossierObj.naam);
+    } else {
+      const live = vindLeefVoertuig(dossierId, voertuigId);
+      if (!live){ alert("Dit voertuig bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      const liveV = live.voertuig;
+      liveV.kenteken = kenteken; liveV.merkModel = merkModel; liveV.kleur = kleur; liveV.betrokkeneNaam = betrokkeneNaam; liveV.notities = notities; liveV.fotos = fotos;
+    }
     flushPendingVerwijderdeFotoIds();
     DB.save(db); closeModal(); render();
   });
   if (!isNew){
     document.getElementById("delV").addEventListener("click", () => {
-      (voertuig.fotos || []).forEach(verwijderFoto);
-      d.voertuigen = d.voertuigen.filter(x => x !== voertuig);
-      logActiviteit(getSession(), `Voertuig verwijderd: "${voertuig.kenteken || voertuig.merkModel}"`, d.naam);
+      const live = vindLeefVoertuig(dossierId, voertuigId);
+      if (!live){ closeModal(); render(); return; }
+      (live.voertuig.fotos || []).forEach(verwijderFoto);
+      live.dossierObj.voertuigen = live.dossierObj.voertuigen.filter(x => x.id !== voertuigId);
+      logActiviteit(getSession(), `Voertuig verwijderd: "${live.voertuig.kenteken || live.voertuig.merkModel}"`, live.dossierObj.naam);
       DB.save(db); closeModal(); render();
     });
   }
@@ -2253,6 +2377,14 @@ function pvHeadHtml(doc, dossierObj, extraBadgeHtml){
     </div>`;
 }
 function openDocDetail(doc, dossierObj, session){
+  // Deze detailweergave kan een tijdje openstaan (bv. terwijl iemand het rustig doorleest); bij
+  // verwijderen daarom altijd live opnieuw opzoeken op ID, niet filteren op de (mogelijk intussen
+  // stale) objectreferentie zelf &mdash; zelfde reden als bij de aanvullingen-fix hierboven. Ook
+  // meteen hier al, zodat zelfs het openen zelf (en de "gelezen"-markering) op de actuele versie werkt.
+  const dossierId = dossierObj.id;
+  const docId = doc.id;
+  const live = vindLeefDoc(dossierId, docId);
+  if (live){ doc = live.doc; dossierObj = live.dossierObj; }
   const canEdit = magDocBewerken(doc, session);
   markDocAlsGelezen(doc, session);
   if (doc.tijdstippen){
@@ -2306,9 +2438,11 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openTussenkomstForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-          fotoIdsVanDoc(doc).forEach(verwijderFoto);
-          dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-          logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
+          const live = vindLeefDoc(dossierId, docId);
+          if (!live){ closeModal(); render(); return; }
+          fotoIdsVanDoc(live.doc).forEach(verwijderFoto);
+          live.dossierObj.documenten = live.dossierObj.documenten.filter(x => x.id !== docId);
+          logActiviteit(session, `${live.doc.type} verwijderd`, live.dossierObj.naam);
           DB.save(db); render();
         });
       });
@@ -2350,9 +2484,11 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openVerslagForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-          fotoIdsVanDoc(doc).forEach(verwijderFoto);
-          dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-          logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
+          const live = vindLeefDoc(dossierId, docId);
+          if (!live){ closeModal(); render(); return; }
+          fotoIdsVanDoc(live.doc).forEach(verwijderFoto);
+          live.dossierObj.documenten = live.dossierObj.documenten.filter(x => x.id !== docId);
+          logActiviteit(session, `${live.doc.type} verwijderd`, live.dossierObj.naam);
           DB.save(db); render();
         });
       });
@@ -2405,9 +2541,11 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openSimpleDocForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-          fotoIdsVanDoc(doc).forEach(verwijderFoto);
-          dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-          logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
+          const live = vindLeefDoc(dossierId, docId);
+          if (!live){ closeModal(); render(); return; }
+          fotoIdsVanDoc(live.doc).forEach(verwijderFoto);
+          live.dossierObj.documenten = live.dossierObj.documenten.filter(x => x.id !== docId);
+          logActiviteit(session, `${live.doc.type} verwijderd`, live.dossierObj.naam);
           DB.save(db); render();
         });
       });
@@ -2453,9 +2591,11 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openVerhoorForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-          fotoIdsVanDoc(doc).forEach(verwijderFoto);
-          dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-          logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
+          const live = vindLeefDoc(dossierId, docId);
+          if (!live){ closeModal(); render(); return; }
+          fotoIdsVanDoc(live.doc).forEach(verwijderFoto);
+          live.dossierObj.documenten = live.dossierObj.documenten.filter(x => x.id !== docId);
+          logActiviteit(session, `${live.doc.type} verwijderd`, live.dossierObj.naam);
           DB.save(db); render();
         });
       });
@@ -2511,9 +2651,11 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openResultatenForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-          fotoIdsVanDoc(doc).forEach(verwijderFoto);
-          dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-          logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
+          const live = vindLeefDoc(dossierId, docId);
+          if (!live){ closeModal(); render(); return; }
+          fotoIdsVanDoc(live.doc).forEach(verwijderFoto);
+          live.dossierObj.documenten = live.dossierObj.documenten.filter(x => x.id !== docId);
+          logActiviteit(session, `${live.doc.type} verwijderd`, live.dossierObj.naam);
           DB.save(db); render();
         });
       });
@@ -2534,16 +2676,20 @@ function openDocDetail(doc, dossierObj, session){
   document.getElementById("mClose").addEventListener("click", closeModal);
   if (canEdit){
     document.getElementById("saveLink").addEventListener("click", () => {
-      doc.externLink = document.getElementById("linkInput").value.trim();
+      const live = vindLeefDoc(dossierId, docId);
+      if (!live){ alert("Dit document bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      live.doc.externLink = document.getElementById("linkInput").value.trim();
       DB.save(db);
       closeModal();
       render();
     });
     document.getElementById("delDocBtn2").addEventListener("click", () => {
       confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-        fotoIdsVanDoc(doc).forEach(verwijderFoto);
-        dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-        logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
+        const live = vindLeefDoc(dossierId, docId);
+        if (!live){ closeModal(); render(); return; }
+        fotoIdsVanDoc(live.doc).forEach(verwijderFoto);
+        live.dossierObj.documenten = live.dossierObj.documenten.filter(x => x.id !== docId);
+        logActiviteit(session, `${live.doc.type} verwijderd`, live.dossierObj.naam);
         DB.save(db); render();
       });
     });
@@ -2941,6 +3087,11 @@ function readAuteur(session){
 // gestructureerd kan zijn als een echt PV, zonder een vaste structuur op te leggen.
 function openSimpleDocForm(dossierObj, session, type, existingDoc){
   pendingVerwijderdeFotoIds = [];
+  // Enkel de ID's vasthouden, niet de objecten zelf: dit formulier kan lang openstaan terwijl de
+  // live db intussen door een ander/eigen tabblad vervangen wordt (onSnapshot), waardoor dossierObj/
+  // existingDoc stale zouden zijn. Bij het opslaan wordt hieronder altijd opnieuw opgezocht.
+  const dossierId = dossierObj.id;
+  const existingDocId = existingDoc ? existingDoc.id : null;
   const isEdit = !!existingDoc;
   // Aanwezigen enkel tonen bij de echte verslagen (Algemeen verslag / Bijkomende informatie),
   // niet bij een loutere Melding of een Opdracht van PDK/onderzoeksrechter.
@@ -3008,8 +3159,8 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
     if (toontAanwezigen) wireAanwezigenPills(modalBody, state);
     const fAuteurEl = modalBody.querySelector("#fAuteur");
     if (fAuteurEl && isAdmin(session)) fAuteurEl.addEventListener("input", (e) => { state.auteur = e.target.value; });
-    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; });
-    modalBody.querySelector("#fTijd").addEventListener("input", (e) => { state.tijd = fmtTimeInput(e.target.value); e.target.value = state.tijd; });
+    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; markeerVeldGeldigheid(e.target, state.datum, datumIsGeldig); });
+    modalBody.querySelector("#fTijd").addEventListener("input", (e) => { state.tijd = fmtTimeInput(e.target.value); e.target.value = state.tijd; markeerVeldGeldigheid(e.target, state.tijd, tijdIsGeldig); });
     const afkomstigEl = modalBody.querySelector("#fAfkomstig");
     if (afkomstigEl) afkomstigEl.addEventListener("change", (e) => { state.afkomstigVan = e.target.value; });
     modalBody.querySelector("#fTitel").addEventListener("input", (e) => { state.titel = e.target.value; });
@@ -3023,6 +3174,8 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#saveSimpleDoc").addEventListener("click", () => {
       // Bij een Opdracht is er geen "opgesteld door": die komt van de PDK/onderzoeksrechter zelf,
       // niet van het lid dat ze hier invoert &mdash; dus geen auteur-veld en geen auteur opslaan.
+      if (!datumIsGeldig(state.datum)){ alert("De datum is niet geldig (DD/MM/JJJJ)."); return; }
+      if (!tijdIsGeldig(state.tijd)){ alert("Het tijdstip is niet geldig (UU:MM)."); return; }
       const auteur = type === "Opdracht" ? "" : readAuteur(session);
       const datum = state.datum.trim() || "&ndash;";
       const tijd = state.tijd.trim();
@@ -3030,17 +3183,22 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
       const afkomstigVan = type === "Opdracht" ? state.afkomstigVan : undefined;
       const secties = state.secties.map(s => ({ kop: s.kop.trim(), tekst: s.tekst.trim(), postcode: (s.postcode || "").trim(), fotos: s.fotos || [] })).filter(s => s.kop || s.tekst || s.postcode || s.fotos.length);
       if (isEdit){
-        existingDoc.auteur = auteur; existingDoc.datum = datum; existingDoc.tijd = tijd;
-        existingDoc.titel = titel; existingDoc.secties = secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }];
-        existingDoc.aanwezigen = state.aanwezigen;
-        delete existingDoc.inhoud;
-        if (afkomstigVan !== undefined) existingDoc.afkomstigVan = afkomstigVan;
-        logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
+        const live = vindLeefDoc(dossierId, existingDocId);
+        if (!live){ alert("Dit document bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        const liveDoc = live.doc;
+        liveDoc.auteur = auteur; liveDoc.datum = datum; liveDoc.tijd = tijd;
+        liveDoc.titel = titel; liveDoc.secties = secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }];
+        liveDoc.aanwezigen = state.aanwezigen;
+        delete liveDoc.inhoud;
+        if (afkomstigVan !== undefined) liveDoc.afkomstigVan = afkomstigVan;
+        logActiviteit(session, `${type} bewerkt`, live.dossierObj.naam);
       } else {
+        const liveDossierObj = vindLeefDossier(dossierId);
+        if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
         const newDoc = { id: "d" + (db.nextDocId++), type, auteur, auteurId: session.id, datum, tijd, titel, secties: secties.length ? secties : [{ kop: "", tekst: "", postcode: "", fotos: [] }], aanwezigen: state.aanwezigen, gezienDoor: [session.id] };
         if (afkomstigVan !== undefined) newDoc.afkomstigVan = afkomstigVan;
-        dossierObj.documenten.push(newDoc);
-        logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
+        liveDossierObj.documenten.push(newDoc);
+        logActiviteit(session, `${type} toegevoegd`, liveDossierObj.naam);
       }
       flushPendingVerwijderdeFotoIds();
       DB.save(db);
@@ -3057,6 +3215,9 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
 /* ---------------- document toevoegen: specialisatie-verslag (OBN/CSI/GO) ---------------- */
 function openVerslagForm(dossierObj, session, type, existingDoc){
   pendingVerwijderdeFotoIds = [];
+  // Zie openSimpleDocForm hierboven: enkel ID's bewaren, bij opslaan altijd live opzoeken.
+  const dossierId = dossierObj.id;
+  const existingDocId = existingDoc ? existingDoc.id : null;
   const isEdit = !!existingDoc;
   const specialisatie = (type.split("-")[0]) || "OBN";
   const state = isEdit
@@ -3108,9 +3269,11 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".loc-datum").forEach(inp => inp.addEventListener("input", (e) => {
       const i = +e.target.dataset.i; const caret = e.target.value;
       state.locations[i].datum = fmtDateInput(caret); e.target.value = state.locations[i].datum;
+      markeerVeldGeldigheid(e.target, state.locations[i].datum, datumIsGeldig);
     }));
     modalBody.querySelectorAll(".loc-tijd").forEach(inp => inp.addEventListener("input", (e) => {
       const i = +e.target.dataset.i; state.locations[i].tijd = fmtTimeInput(e.target.value); e.target.value = state.locations[i].tijd;
+      markeerVeldGeldigheid(e.target, state.locations[i].tijd, tijdIsGeldig);
     }));
     modalBody.querySelectorAll(".loc-postcode").forEach(inp => inp.addEventListener("input", (e) => { state.locations[+e.target.dataset.i].postcode = e.target.value; }));
     modalBody.querySelectorAll(".loc-tekst").forEach(inp => inp.addEventListener("input", (e) => { state.locations[+e.target.dataset.i].tekst = e.target.value; }));
@@ -3119,18 +3282,25 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.locations.splice(+btn.dataset.i, 1); render_(); }));
     modalBody.querySelector("#addLocBtn").addEventListener("click", () => { state.locations.push({ datum: "", tijd: "", postcode: "", tekst: "", photos: [] }); render_(); });
     modalBody.querySelector("#saveDocBtn").addEventListener("click", () => {
+      const ongeldigeLoc = state.locations.find(l => !datumIsGeldig(l.datum) || !tijdIsGeldig(l.tijd));
+      if (ongeldigeLoc){ alert("Een van de locaties heeft een ongeldige datum (DD/MM/JJJJ) of tijdstip (UU:MM)."); return; }
       const auteur = readAuteur(session);
       const first = state.locations[0] || {};
       const locaties = state.locations.map(l => ({ datum: l.datum, tijd: l.tijd, postcode: l.postcode, tekst: l.tekst, foto_s: l.photos }));
       if (isEdit){
-        existingDoc.auteur = auteur;
-        existingDoc.datum = first.datum || "&ndash;";
-        existingDoc.tijd = first.tijd || "";
-        existingDoc.locaties = locaties;
-        existingDoc.aanwezigen = state.aanwezigen;
-        logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
+        const live = vindLeefDoc(dossierId, existingDocId);
+        if (!live){ alert("Dit document bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        const liveDoc = live.doc;
+        liveDoc.auteur = auteur;
+        liveDoc.datum = first.datum || "&ndash;";
+        liveDoc.tijd = first.tijd || "";
+        liveDoc.locaties = locaties;
+        liveDoc.aanwezigen = state.aanwezigen;
+        logActiviteit(session, `${type} bewerkt`, live.dossierObj.naam);
       } else {
-        dossierObj.documenten.push({
+        const liveDossierObj = vindLeefDossier(dossierId);
+        if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        liveDossierObj.documenten.push({
           id: "d" + (db.nextDocId++),
           type,
           specialisatie,
@@ -3142,7 +3312,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
           aanwezigen: state.aanwezigen,
           gezienDoor: [session.id]
         });
-        logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
+        logActiviteit(session, `${type} toegevoegd`, liveDossierObj.naam);
       }
       flushPendingVerwijderdeFotoIds();
       DB.save(db);
@@ -3164,6 +3334,9 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
 // je vroeg — zeg gerust als dat weg mag of anders moet.
 function openTussenkomstForm(dossierObj, session, type, existingDoc){
   pendingVerwijderdeFotoIds = [];
+  // Zie openSimpleDocForm hierboven: enkel ID's bewaren, bij opslaan altijd live opzoeken.
+  const dossierId = dossierObj.id;
+  const existingDocId = existingDoc ? existingDoc.id : null;
   const isEdit = !!existingDoc;
   const isCSI = type === "CSI-verslag";
   const specialisatie = type.split("-")[0];
@@ -3241,12 +3414,12 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     modalBody.querySelector("#mClose").addEventListener("click", closeModal);
     wireAanwezigenPills(modalBody, state);
     if (isAdmin(session)) modalBody.querySelector("#fAuteur").addEventListener("input", (e) => { state.auteur = e.target.value; });
-    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; });
+    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; markeerVeldGeldigheid(e.target, state.datum, datumIsGeldig); });
     modalBody.querySelector("#fPostcode").addEventListener("input", (e) => { state.postcode = e.target.value; });
     modalBody.querySelector("#fBevindingen").addEventListener("input", (e) => { state.bevindingen = e.target.value; });
     maakOpmaakToolbar(modalBody.querySelector("#fBevindingen"));
     modalBody.querySelectorAll(".tij-label").forEach(inp => inp.addEventListener("input", (e) => { state.tijdstippen[+e.target.dataset.i].label = e.target.value; }));
-    modalBody.querySelectorAll(".tij-tijd").forEach(inp => inp.addEventListener("input", (e) => { const i = +e.target.dataset.i; state.tijdstippen[i].tijd = fmtTimeInput(e.target.value); e.target.value = state.tijdstippen[i].tijd; }));
+    modalBody.querySelectorAll(".tij-tijd").forEach(inp => inp.addEventListener("input", (e) => { const i = +e.target.dataset.i; state.tijdstippen[i].tijd = fmtTimeInput(e.target.value); e.target.value = state.tijdstippen[i].tijd; markeerVeldGeldigheid(e.target, state.tijdstippen[i].tijd, tijdIsGeldig); }));
     modalBody.querySelectorAll(".tij-remove").forEach(btn => btn.addEventListener("click", () => { state.tijdstippen.splice(+btn.dataset.i, 1); render_(); }));
     modalBody.querySelector("#addTijBtn").addEventListener("click", () => { state.tijdstippen.push({ label: "", tijd: "" }); render_(); });
     modalBody.querySelectorAll(".row-label").forEach(inp => inp.addEventListener("input", (e) => { state.rows[+e.target.dataset.i].label = e.target.value; }));
@@ -3256,6 +3429,9 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
     const tkFotosWrap = modalBody.querySelector("#tkFotosWrap");
     if (tkFotosWrap){ if (!state.foto_s) state.foto_s = []; maakFotoWidget(tkFotosWrap, state.foto_s, session); }
     modalBody.querySelector("#saveTussenkomst").addEventListener("click", () => {
+      if (!datumIsGeldig(state.datum)){ alert("De datum is niet geldig (DD/MM/JJJJ)."); return; }
+      const ongeldigTijdstip = state.tijdstippen.find(t => !tijdIsGeldig(t.tijd));
+      if (ongeldigTijdstip){ alert("Een van de tijdstippen is niet geldig (UU:MM)."); return; }
       const auteur = readAuteur(session);
       const datum = state.datum.trim() || "&ndash;";
       const postcode = state.postcode.trim();
@@ -3266,14 +3442,19 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
       // overgenomen van het eerste ingevulde tijdstip hier, zodat het ook daar zichtbaar is.
       const eersteTijd = (tijdstippen[0] && tijdstippen[0].tijd) || "";
       if (isEdit){
-        existingDoc.auteur = auteur; existingDoc.datum = datum; existingDoc.tijd = eersteTijd; existingDoc.postcode = postcode;
-        existingDoc.bevindingen = bevindingen;
-        existingDoc.tijdstippen = tijdstippen.length ? tijdstippen : [{ label: "", tijd: "" }];
-        existingDoc.rows = rows;
-        existingDoc.aanwezigen = state.aanwezigen;
-        existingDoc.foto_s = state.foto_s;
-        logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
+        const live = vindLeefDoc(dossierId, existingDocId);
+        if (!live){ alert("Dit document bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        const liveDoc = live.doc;
+        liveDoc.auteur = auteur; liveDoc.datum = datum; liveDoc.tijd = eersteTijd; liveDoc.postcode = postcode;
+        liveDoc.bevindingen = bevindingen;
+        liveDoc.tijdstippen = tijdstippen.length ? tijdstippen : [{ label: "", tijd: "" }];
+        liveDoc.rows = rows;
+        liveDoc.aanwezigen = state.aanwezigen;
+        liveDoc.foto_s = state.foto_s;
+        logActiviteit(session, `${type} bewerkt`, live.dossierObj.naam);
       } else {
+        const liveDossierObj = vindLeefDossier(dossierId);
+        if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
         const newDoc = {
           id: "d" + (db.nextDocId++), type, specialisatie, auteur, auteurId: session.id, datum, tijd: eersteTijd,
           postcode, bevindingen,
@@ -3283,8 +3464,8 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
           gezienDoor: [session.id],
           foto_s: state.foto_s
         };
-        dossierObj.documenten.push(newDoc);
-        logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
+        liveDossierObj.documenten.push(newDoc);
+        logActiviteit(session, `${type} toegevoegd`, liveDossierObj.naam);
       }
       flushPendingVerwijderdeFotoIds();
       DB.save(db);
@@ -3305,6 +3486,9 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
 // wanneer) en of er bijstand van een advocaat was.
 function openVerhoorForm(dossierObj, session, type, existingDoc){
   pendingVerwijderdeFotoIds = [];
+  // Zie openSimpleDocForm hierboven: enkel ID's bewaren, bij opslaan altijd live opzoeken.
+  const dossierId = dossierObj.id;
+  const existingDocId = existingDoc ? existingDoc.id : null;
   const isEdit = !!existingDoc;
   const bestaandeSecties = existingDoc && existingDoc.secties && existingDoc.secties.length
     ? existingDoc.secties.map(s => ({ kop: s.kop || "", tekst: s.tekst || "", fotos: (s.fotos || []).slice() }))
@@ -3383,15 +3567,15 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
     wireAanwezigenPills(modalBody, state);
     const fAuteurEl = modalBody.querySelector("#fAuteur");
     if (fAuteurEl && isAdmin(session)) fAuteurEl.addEventListener("input", (e) => { state.auteur = e.target.value; });
-    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; });
-    modalBody.querySelector("#fTijd").addEventListener("input", (e) => { state.tijd = fmtTimeInput(e.target.value); e.target.value = state.tijd; });
-    modalBody.querySelector("#fEindTijd").addEventListener("input", (e) => { state.eindTijd = fmtTimeInput(e.target.value); e.target.value = state.eindTijd; });
+    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { state.datum = fmtDateInput(e.target.value); e.target.value = state.datum; markeerVeldGeldigheid(e.target, state.datum, datumIsGeldig); });
+    modalBody.querySelector("#fTijd").addEventListener("input", (e) => { state.tijd = fmtTimeInput(e.target.value); e.target.value = state.tijd; markeerVeldGeldigheid(e.target, state.tijd, tijdIsGeldig); });
+    modalBody.querySelector("#fEindTijd").addEventListener("input", (e) => { state.eindTijd = fmtTimeInput(e.target.value); e.target.value = state.eindTijd; markeerVeldGeldigheid(e.target, state.eindTijd, tijdIsGeldig); });
     modalBody.querySelector("#fOndervraagde").addEventListener("input", (e) => { state.ondervraagde = e.target.value; });
     modalBody.querySelector("#fHoedanigheid").addEventListener("change", (e) => { state.hoedanigheid = e.target.value; });
     modalBody.querySelector("#fCautie").addEventListener("change", (e) => { state.cautie = e.target.checked; render_(); });
     modalBody.querySelector("#toonRechtenBtn").addEventListener("click", () => openInfoPopup("Rechten bij verhoor", RECHTEN_STANDAARDTEKST));
     const cautieTijdEl = modalBody.querySelector("#fCautieTijd");
-    if (cautieTijdEl) cautieTijdEl.addEventListener("input", (e) => { state.cautieTijd = fmtTimeInput(e.target.value); e.target.value = state.cautieTijd; });
+    if (cautieTijdEl) cautieTijdEl.addEventListener("input", (e) => { state.cautieTijd = fmtTimeInput(e.target.value); e.target.value = state.cautieTijd; markeerVeldGeldigheid(e.target, state.cautieTijd, tijdIsGeldig); });
     modalBody.querySelector("#fAdvocaat").addEventListener("change", (e) => { state.advocaat = e.target.checked; render_(); });
     const advocaatNaamEl = modalBody.querySelector("#fAdvocaatNaam");
     if (advocaatNaamEl) advocaatNaamEl.addEventListener("input", (e) => { state.advocaatNaam = e.target.value; });
@@ -3403,6 +3587,10 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".loc-remove").forEach(btn => btn.addEventListener("click", () => { state.secties.splice(+btn.dataset.i, 1); render_(); }));
     modalBody.querySelector("#addSecBtn").addEventListener("click", () => { state.secties.push({ kop: "", tekst: "", fotos: [] }); render_(); });
     modalBody.querySelector("#saveVerhoor").addEventListener("click", () => {
+      if (!datumIsGeldig(state.datum)){ alert("De datum is niet geldig (DD/MM/JJJJ)."); return; }
+      if (!tijdIsGeldig(state.tijd)){ alert("Het tijdstip is niet geldig (UU:MM)."); return; }
+      if (!tijdIsGeldig(state.eindTijd)){ alert("Het eindtijdstip is niet geldig (UU:MM)."); return; }
+      if (state.cautie && !tijdIsGeldig(state.cautieTijd)){ alert("Het tijdstip van de cautie is niet geldig (UU:MM)."); return; }
       const auteur = readAuteur(session);
       const datum = state.datum.trim() || "&ndash;";
       const tijd = state.tijd.trim();
@@ -3419,11 +3607,15 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
         aanwezigen: state.aanwezigen
       };
       if (isEdit){
-        Object.assign(existingDoc, payload);
-        logActiviteit(session, "Verhoor-verslag bewerkt", dossierObj.naam);
+        const live = vindLeefDoc(dossierId, existingDocId);
+        if (!live){ alert("Dit document bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        Object.assign(live.doc, payload);
+        logActiviteit(session, "Verhoor-verslag bewerkt", live.dossierObj.naam);
       } else {
-        dossierObj.documenten.push({ id: "d" + (db.nextDocId++), type: "Verhoor-verslag", ...payload, auteurId: session.id, gezienDoor: [session.id] });
-        logActiviteit(session, "Verhoor-verslag toegevoegd", dossierObj.naam);
+        const liveDossierObj = vindLeefDossier(dossierId);
+        if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        liveDossierObj.documenten.push({ id: "d" + (db.nextDocId++), type: "Verhoor-verslag", ...payload, auteurId: session.id, gezienDoor: [session.id] });
+        logActiviteit(session, "Verhoor-verslag toegevoegd", liveDossierObj.naam);
       }
       flushPendingVerwijderdeFotoIds();
       DB.save(db);
@@ -3440,6 +3632,9 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
 /* ---------------- document toevoegen: beschikbare resultaten (interne spreadsheet/aanvullingen) ---------------- */
 function openResultatenForm(dossierObj, session, type, existingDoc){
   pendingVerwijderdeFotoIds = [];
+  // Zie openSimpleDocForm hierboven: enkel ID's bewaren, bij opslaan altijd live opzoeken.
+  const dossierId = dossierObj.id;
+  const existingDocId = existingDoc ? existingDoc.id : null;
   const isEdit = !!existingDoc;
   const isTap = type === "TAP-dossier";
   const isBijstand = type === "Bijstandsaanvraag";
@@ -3531,8 +3726,8 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
 
   function wireEvents(){
     modalBody.querySelector("#mClose").addEventListener("click", closeModal);
-    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); state.datum = e.target.value; });
-    modalBody.querySelector("#fTijd").addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; });
+    modalBody.querySelector("#fDatum").addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); state.datum = e.target.value; markeerVeldGeldigheid(e.target, state.datum, datumIsGeldig); });
+    modalBody.querySelector("#fTijd").addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; markeerVeldGeldigheid(e.target, state.tijd, tijdIsGeldig); });
     if (isAdmin(session)) modalBody.querySelector("#fAuteur").addEventListener("input", (e) => { state.auteur = e.target.value; });
     if (modalBody.querySelector("#fTitel")) modalBody.querySelector("#fTitel").addEventListener("input", (e) => { state.titel = e.target.value; });
     if (modalBody.querySelector("#fInhoud")){ modalBody.querySelector("#fInhoud").addEventListener("input", (e) => { state.inhoud = e.target.value; }); maakOpmaakToolbar(modalBody.querySelector("#fInhoud")); }
@@ -3544,8 +3739,8 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     modalBody.querySelectorAll(".row-label").forEach(inp => inp.addEventListener("input", (e) => { state.rows[+e.target.dataset.i].label = e.target.value; }));
     modalBody.querySelectorAll(".row-waarde").forEach(inp => inp.addEventListener("input", (e) => {
       const i = +e.target.dataset.i;
-      if (isBijstand && state.rows[i].label === "Datum tussenkomst") e.target.value = fmtDateInput(e.target.value);
-      if (isBijstand && state.rows[i].label === "Tijdstip briefing") e.target.value = fmtTimeInput(e.target.value);
+      if (isBijstand && state.rows[i].label === "Datum tussenkomst"){ e.target.value = fmtDateInput(e.target.value); markeerVeldGeldigheid(e.target, e.target.value, datumIsGeldig); }
+      if (isBijstand && state.rows[i].label === "Tijdstip briefing"){ e.target.value = fmtTimeInput(e.target.value); markeerVeldGeldigheid(e.target, e.target.value, tijdIsGeldig); }
       state.rows[i].waarde = e.target.value;
     }));
     modalBody.querySelectorAll(".row-remove").forEach(btn => btn.addEventListener("click", () => { state.rows.splice(+btn.dataset.i, 1); render_(); }));
@@ -3555,9 +3750,20 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
     if (!state.foto_s) state.foto_s = [];
     maakFotoWidget(modalBody.querySelector("#resultatenFotosWrap"), state.foto_s, session);
     modalBody.querySelector("#saveResultatenBtn").addEventListener("click", () => {
+      const datumWaarde = modalBody.querySelector("#fDatum").value;
+      const tijdWaarde = modalBody.querySelector("#fTijd").value;
+      if (!datumIsGeldig(datumWaarde)){ alert("De datum is niet geldig (DD/MM/JJJJ)."); return; }
+      if (!tijdIsGeldig(tijdWaarde)){ alert("Het tijdstip is niet geldig (UU:MM)."); return; }
+      if (isBijstand){
+        const ongeldigeRij = state.rows.find(r =>
+          (r.label === "Datum tussenkomst" && !datumIsGeldig(r.waarde)) ||
+          (r.label === "Tijdstip briefing" && !tijdIsGeldig(r.waarde))
+        );
+        if (ongeldigeRij){ alert("\"" + ongeldigeRij.label + "\" is niet geldig."); return; }
+      }
       const auteur = readAuteur(session);
-      const datum = modalBody.querySelector("#fDatum").value.trim() || "&ndash;";
-      const tijd = modalBody.querySelector("#fTijd").value.trim();
+      const datum = datumWaarde.trim() || "&ndash;";
+      const tijd = tijdWaarde.trim();
       const titel = modalBody.querySelector("#fTitel").value.trim();
       const inhoud = isBijstand ? "" : modalBody.querySelector("#fInhoud").value.trim();
       const externLink = modalBody.querySelector("#fLink").value.trim();
@@ -3571,15 +3777,20 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         dossierbeheerders: modalBody.querySelector("#fDossierbeheerders").value.trim()
       } : {};
       if (isEdit){
-        existingDoc.auteur = auteur; existingDoc.datum = datum; existingDoc.tijd = tijd;
-        Object.assign(existingDoc, bijstandExtra);
-        existingDoc.titel = titel; existingDoc.inhoud = inhoud; existingDoc.externLink = externLink;
-        existingDoc.rows = rows;
-        existingDoc.foto_s = state.foto_s || [];
-        existingDoc.aanwezigen = state.aanwezigen;
-        logActiviteit(session, `${type} bewerkt`, dossierObj.naam);
+        const live = vindLeefDoc(dossierId, existingDocId);
+        if (!live){ alert("Dit document bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        const liveDoc = live.doc;
+        liveDoc.auteur = auteur; liveDoc.datum = datum; liveDoc.tijd = tijd;
+        Object.assign(liveDoc, bijstandExtra);
+        liveDoc.titel = titel; liveDoc.inhoud = inhoud; liveDoc.externLink = externLink;
+        liveDoc.rows = rows;
+        liveDoc.foto_s = state.foto_s || [];
+        liveDoc.aanwezigen = state.aanwezigen;
+        logActiviteit(session, `${type} bewerkt`, live.dossierObj.naam);
       } else {
-        dossierObj.documenten.push({
+        const liveDossierObj = vindLeefDossier(dossierId);
+        if (!liveDossierObj){ alert("Dit dossier bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+        liveDossierObj.documenten.push({
           id: "d" + (db.nextDocId++),
           type,
           auteur, auteurId: session.id, datum, tijd, titel, inhoud, externLink, rows,
@@ -3589,7 +3800,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
           aanvullingen: [],
           gezienDoor: [session.id]
         });
-        logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
+        logActiviteit(session, `${type} toegevoegd`, liveDossierObj.naam);
       }
       flushPendingVerwijderdeFotoIds();
       DB.save(db);
@@ -3632,15 +3843,19 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
     modalBody.querySelector("#mClose").addEventListener("click", closeModal);
     const fADatum = modalBody.querySelector("#fADatum"), fATijd = modalBody.querySelector("#fATijd"), fATekst = modalBody.querySelector("#fATekst");
     fADatum.value = state.datum || ""; fATijd.value = state.tijd || ""; fATekst.value = state.tekst || "";
-    fADatum.addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); state.datum = e.target.value; });
-    fATijd.addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; });
+    fADatum.addEventListener("input", (e) => { e.target.value = fmtDateInput(e.target.value); state.datum = e.target.value; markeerVeldGeldigheid(e.target, state.datum, datumIsGeldig); });
+    fATijd.addEventListener("input", (e) => { e.target.value = fmtTimeInput(e.target.value); state.tijd = e.target.value; markeerVeldGeldigheid(e.target, state.tijd, tijdIsGeldig); });
     fATekst.addEventListener("input", (e) => { state.tekst = e.target.value; });
     maakOpmaakToolbar(fATekst);
     if (!state.foto_s) state.foto_s = [];
     maakFotoWidget(modalBody.querySelector("#aanvFotosWrap"), state.foto_s, session);
     modalBody.querySelector("#saveAanvulling").addEventListener("click", () => {
-    const datum = (modalBody.querySelector("#fADatum").value || "").trim() || "&ndash;";
-    const tijd = (modalBody.querySelector("#fATijd").value || "").trim();
+    const datumWaarde = modalBody.querySelector("#fADatum").value || "";
+    const tijdWaarde = modalBody.querySelector("#fATijd").value || "";
+    if (!datumIsGeldig(datumWaarde)){ alert("De datum is niet geldig (DD/MM/JJJJ)."); return; }
+    if (!tijdIsGeldig(tijdWaarde)){ alert("Het tijdstip is niet geldig (UU:MM)."); return; }
+    const datum = datumWaarde.trim() || "&ndash;";
+    const tijd = tijdWaarde.trim();
     const tekst = (modalBody.querySelector("#fATekst").value || "").trim();
     if (!tekst) return;
     // Het document (en het dossier erboven) hier opnieuw opzoeken aan de hand van hun ID, in
@@ -3835,6 +4050,8 @@ function genereerUniekeToegangscode(){
 }
 
 function openMemberForm(member, viewerSession){
+  // Zie openSimpleDocForm hierboven: enkel het ID bewaren, bij opslaan altijd live opzoeken.
+  const memberId = member ? member.id : null;
   const isNew = !member;
   // Nieuwe leden starten standaard als "Rechercheur in opleiding" en actief; leiding kan dit
   // bij promotie/wijziging aanpassen.
@@ -3893,9 +4110,11 @@ function openMemberForm(member, viewerSession){
   document.getElementById("saveMember").addEventListener("click", () => {
     const status = document.getElementById("fStatus").value;
     if (statusOnly){
+      const liveMember = vindLeefMember(memberId);
+      if (!liveMember){ alert("Dit lid bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
       // Enkel de status wordt aangepast; alle andere velden blijven exact zoals ze waren.
-      member.status = status;
-      logActiviteit(viewerSession, `Status gewijzigd naar "${status}": "${member.naam}"`);
+      liveMember.status = status;
+      logActiviteit(viewerSession, `Status gewijzigd naar "${status}": "${liveMember.naam}"`);
       DB.save(db);
       closeModal();
       render();
@@ -3920,7 +4139,9 @@ function openMemberForm(member, viewerSession){
       db.accessCodes.push({ code: genereerUniekeToegangscode(), memberId: newId });
       logActiviteit(viewerSession, `Lid toegevoegd: "${naam}"`);
     } else {
-      member.naam = naam; member.callsign = callsign; member.discordId = discordId; member.status = status; member.rol = rol; member.admin = admin; member.specialisaties = specs;
+      const liveMember = vindLeefMember(memberId);
+      if (!liveMember){ alert("Dit lid bestaat niet meer (intussen verwijderd?). De pagina wordt ververst."); closeModal(); render(); return; }
+      liveMember.naam = naam; liveMember.callsign = callsign; liveMember.discordId = discordId; liveMember.status = status; liveMember.rol = rol; liveMember.admin = admin; liveMember.specialisaties = specs;
       logActiviteit(viewerSession, `Lid bewerkt: "${naam}"`);
     }
     DB.save(db);
@@ -3929,9 +4150,11 @@ function openMemberForm(member, viewerSession){
   });
   if (!isNew && !statusOnly){
     document.getElementById("deleteMember").addEventListener("click", () => {
-      db.members = db.members.filter(x => x.id !== member.id);
-      db.accessCodes = db.accessCodes.filter(c => c.memberId !== member.id);
-      logActiviteit(viewerSession, `Lid verwijderd: "${member.naam}"`);
+      const liveMember = vindLeefMember(memberId);
+      const naamVoorLog = liveMember ? liveMember.naam : member.naam;
+      db.members = db.members.filter(x => x.id !== memberId);
+      db.accessCodes = db.accessCodes.filter(c => c.memberId !== memberId);
+      logActiviteit(viewerSession, `Lid verwijderd: "${naamVoorLog}"`);
       DB.save(db);
       closeModal();
       render();
