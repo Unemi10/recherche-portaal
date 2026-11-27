@@ -476,6 +476,7 @@ function wireAanvullingenKnoppen(doc, dossierObj, session){
   document.querySelectorAll(".aanv-del").forEach(span => span.addEventListener("click", () => {
     const target = aanvullingen[+span.dataset.i];
     confirmModal("Deze aanvulling verwijderen?", () => {
+      (target.foto_s || []).forEach(verwijderFoto);
       doc.aanvullingen = doc.aanvullingen.filter(x => x !== target);
       logActiviteit(session, "Aanvulling verwijderd", dossierObj.naam);
       DB.save(db);
@@ -721,6 +722,47 @@ function uploadFoto(file, session){
     }).then(() => id);
   });
 }
+// Verwijdert een foto effectief uit de aparte recherche_fotos-verzameling in Firestore (niet enkel
+// de verwijzing ernaar). Fire-and-forget: de gebruiker hoeft hier niet op te wachten, en als het
+// toevallig faalt (bv. kort internetprobleem) blijft het hooguit een weeskopie &mdash; geen dataverlies
+// aan de kant van de gebruiker, die ziet gewoon dat de foto weg is uit het verslag.
+function verwijderFoto(id){
+  if (!fotosCollectionRef || !id) return;
+  delete fotoCache[id];
+  fotosCollectionRef.doc(id).delete().catch(err => console.error("Foto verwijderen uit database mislukt:", err));
+}
+// Verzamelt alle foto-ID's die ergens in één document hangen (hoofdfoto's, per sectie/locatie,
+// aanvullingen, de verdachten/pand-foto's van een Bijstandsaanvraag), zodat ze bij het verwijderen
+// van dat document ook effectief uit recherche_fotos gehaald kunnen worden in plaats van weeskopie
+// te worden.
+function fotoIdsVanDoc(doc){
+  const ids = [];
+  if (doc.foto_s) ids.push(...doc.foto_s);
+  if (doc.secties) doc.secties.forEach(s => { if (s.fotos) ids.push(...s.fotos); });
+  if (doc.locaties) doc.locaties.forEach(l => { if (l.foto_s) ids.push(...l.foto_s); });
+  if (doc.aanvullingen) doc.aanvullingen.forEach(a => { if (a.foto_s) ids.push(...a.foto_s); });
+  if (doc.verdachtenFotos) ids.push(...doc.verdachtenFotos);
+  if (doc.pandFotos) ids.push(...doc.pandFotos);
+  return ids;
+}
+// Idem, maar dan alle foto-ID's van een volledig dossier (betrokkenen, voertuigen, en alle
+// documenten erin) &mdash; gebruikt bij het volledig verwijderen van een dossier.
+function fotoIdsVanDossier(d){
+  const ids = [];
+  (d.betrokkenen || []).forEach(b => { if (b.fotos) ids.push(...b.fotos); });
+  (d.voertuigen || []).forEach(v => { if (v.fotos) ids.push(...v.fotos); });
+  (d.documenten || []).forEach(doc => ids.push(...fotoIdsVanDoc(doc)));
+  return ids;
+}
+// Foto-ID's die tijdens het bewerken van een open formulier via het kruisje verwijderd zijn, maar
+// pas effectief uit de database gehaald worden als het formulier ook echt opgeslagen wordt (anders
+// zou annuleren een foto laten verdwijnen die nog ergens anders aan hing). Wordt bij het openen van
+// elk formulier met een foto-widget gereset, en na een geslaagde opslag geleegd/effectief verwijderd.
+let pendingVerwijderdeFotoIds = [];
+function flushPendingVerwijderdeFotoIds(){
+  pendingVerwijderdeFotoIds.forEach(verwijderFoto);
+  pendingVerwijderdeFotoIds = [];
+}
 const fotoCache = {};
 // Haalt (eenmalig, niet live) de beeldgegevens van een foto op en roept dan onGeladen(dataUrl) aan;
 // bij een reeds gecachete foto gebeurt dat meteen en synchroon.
@@ -758,7 +800,7 @@ function maakFotoWidget(container, idsRef, session){
       thumb.style.backgroundSize = "cover";
       thumb.style.backgroundPosition = "center";
       laadFoto(id, (dataUrl) => { thumb.style.backgroundImage = `url(${dataUrl})`; });
-      thumb.addEventListener("click", () => { idsRef.splice(i, 1); tekenen(); });
+      thumb.addEventListener("click", () => { pendingVerwijderdeFotoIds.push(id); idsRef.splice(i, 1); tekenen(); });
       container.appendChild(thumb);
     });
     const addBtn = document.createElement("div");
@@ -1699,6 +1741,7 @@ function openOverzichtForm(d){
   if (!isNew){
     document.getElementById("deleteDossier").addEventListener("click", () => {
       confirmModal(`Dossier "${obj.naam}" volledig verwijderen? Dit kan niet ongedaan gemaakt worden.`, () => {
+        fotoIdsVanDossier(obj).forEach(verwijderFoto);
         db.dossiers = db.dossiers.filter(x => x !== obj);
         logActiviteit(getSession(), `Dossier verwijderd: "${obj.naam}"`, obj.naam);
         DB.save(db);
@@ -1816,6 +1859,7 @@ function docRow(doc, dossierObj, session){
   if (delBtn) delBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+      fotoIdsVanDoc(doc).forEach(verwijderFoto);
       dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
       logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
       DB.save(db);
@@ -1872,6 +1916,7 @@ function dossierBetrokkenen(d, session){
       row.querySelector(".edit-b").addEventListener("click", () => openBetrokkeneForm(d, b));
       row.querySelector(".del-b").addEventListener("click", () => {
         confirmModal("Deze betrokkene verwijderen?", () => {
+          (b.fotos || []).forEach(verwijderFoto);
           d.betrokkenen = d.betrokkenen.filter(x => x !== b);
           DB.save(db); render();
         });
@@ -1883,6 +1928,7 @@ function dossierBetrokkenen(d, session){
 }
 
 function openBetrokkeneForm(d, betrokkene){
+  pendingVerwijderdeFotoIds = [];
   const isNew = !betrokkene;
   const b = betrokkene || { naam: "", detail: "", tag: "Verdachte", tagClass: "chip-wanted", signalement: "", fotos: [] };
   const state = { fotos: (b.fotos || []).slice() };
@@ -1921,10 +1967,12 @@ function openBetrokkeneForm(d, betrokkene){
     if (!naam) return;
     if (isNew){ d.betrokkenen.push({ naam, detail, tag, tagClass, signalement, fotos }); logActiviteit(getSession(), `Betrokkene toegevoegd: "${naam}"`, d.naam); }
     else { betrokkene.naam = naam; betrokkene.detail = detail; betrokkene.tag = tag; betrokkene.tagClass = tagClass; betrokkene.signalement = signalement; betrokkene.fotos = fotos; }
+    flushPendingVerwijderdeFotoIds();
     DB.save(db); closeModal(); render();
   });
   if (!isNew){
     document.getElementById("delB").addEventListener("click", () => {
+      (betrokkene.fotos || []).forEach(verwijderFoto);
       d.betrokkenen = d.betrokkenen.filter(x => x !== betrokkene);
       logActiviteit(getSession(), `Betrokkene verwijderd: "${betrokkene.naam}"`, d.naam);
       DB.save(db); closeModal(); render();
@@ -1963,6 +2011,7 @@ function dossierVoertuigen(d, session){
       row.querySelector(".edit-v").addEventListener("click", () => openVoertuigForm(d, v));
       row.querySelector(".del-v").addEventListener("click", () => {
         confirmModal("Dit voertuig verwijderen?", () => {
+          (v.fotos || []).forEach(verwijderFoto);
           d.voertuigen = d.voertuigen.filter(x => x !== v);
           DB.save(db); render();
         });
@@ -1974,6 +2023,7 @@ function dossierVoertuigen(d, session){
 }
 
 function openVoertuigForm(d, voertuig){
+  pendingVerwijderdeFotoIds = [];
   const isNew = !voertuig;
   const v = voertuig || { kenteken: "", merkModel: "", kleur: "", betrokkeneNaam: "", notities: "", fotos: [] };
   const state = { fotos: (v.fotos || []).slice() };
@@ -2013,10 +2063,12 @@ function openVoertuigForm(d, voertuig){
     if (!kenteken && !merkModel) return;
     if (isNew){ d.voertuigen.push({ kenteken, merkModel, kleur, betrokkeneNaam, notities, fotos }); logActiviteit(getSession(), `Voertuig toegevoegd: "${kenteken || merkModel}"`, d.naam); }
     else { voertuig.kenteken = kenteken; voertuig.merkModel = merkModel; voertuig.kleur = kleur; voertuig.betrokkeneNaam = betrokkeneNaam; voertuig.notities = notities; voertuig.fotos = fotos; }
+    flushPendingVerwijderdeFotoIds();
     DB.save(db); closeModal(); render();
   });
   if (!isNew){
     document.getElementById("delV").addEventListener("click", () => {
+      (voertuig.fotos || []).forEach(verwijderFoto);
       d.voertuigen = d.voertuigen.filter(x => x !== voertuig);
       logActiviteit(getSession(), `Voertuig verwijderd: "${voertuig.kenteken || voertuig.merkModel}"`, d.naam);
       DB.save(db); closeModal(); render();
@@ -2105,6 +2157,7 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openTussenkomstForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+          fotoIdsVanDoc(doc).forEach(verwijderFoto);
           dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
           logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
           DB.save(db); render();
@@ -2148,6 +2201,7 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openVerslagForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+          fotoIdsVanDoc(doc).forEach(verwijderFoto);
           dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
           logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
           DB.save(db); render();
@@ -2202,6 +2256,7 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openSimpleDocForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+          fotoIdsVanDoc(doc).forEach(verwijderFoto);
           dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
           logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
           DB.save(db); render();
@@ -2249,6 +2304,7 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openVerhoorForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+          fotoIdsVanDoc(doc).forEach(verwijderFoto);
           dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
           logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
           DB.save(db); render();
@@ -2306,6 +2362,7 @@ function openDocDetail(doc, dossierObj, session){
       document.getElementById("editDocBtn").addEventListener("click", () => { closeModal(); openResultatenForm(dossierObj, session, doc.type, doc); });
       document.getElementById("delDocBtn").addEventListener("click", () => {
         confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+          fotoIdsVanDoc(doc).forEach(verwijderFoto);
           dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
           logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
           DB.save(db); render();
@@ -2335,6 +2392,7 @@ function openDocDetail(doc, dossierObj, session){
     });
     document.getElementById("delDocBtn2").addEventListener("click", () => {
       confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
+        fotoIdsVanDoc(doc).forEach(verwijderFoto);
         dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
         logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
         DB.save(db); render();
@@ -2733,6 +2791,7 @@ function readAuteur(session){
 // in plaats van één groot tekstveld, zodat een verslag met meerdere vaststellingen/stappen even
 // gestructureerd kan zijn als een echt PV, zonder een vaste structuur op te leggen.
 function openSimpleDocForm(dossierObj, session, type, existingDoc){
+  pendingVerwijderdeFotoIds = [];
   const isEdit = !!existingDoc;
   // Aanwezigen enkel tonen bij de echte verslagen (Algemeen verslag / Bijkomende informatie),
   // niet bij een loutere Melding of een Opdracht van PDK/onderzoeksrechter.
@@ -2834,6 +2893,7 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
         dossierObj.documenten.push(newDoc);
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
       }
+      flushPendingVerwijderdeFotoIds();
       DB.save(db);
       closeModal();
       render();
@@ -2847,6 +2907,7 @@ function openSimpleDocForm(dossierObj, session, type, existingDoc){
 
 /* ---------------- document toevoegen: specialisatie-verslag (OBN/CSI/GO) ---------------- */
 function openVerslagForm(dossierObj, session, type, existingDoc){
+  pendingVerwijderdeFotoIds = [];
   const isEdit = !!existingDoc;
   const specialisatie = (type.split("-")[0]) || "OBN";
   const state = isEdit
@@ -2934,6 +2995,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
         });
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
       }
+      flushPendingVerwijderdeFotoIds();
       DB.save(db);
       closeModal();
       render();
@@ -2952,6 +3014,7 @@ function openVerslagForm(dossierObj, session, type, existingDoc){
 // er aangetroffen/in beslag genomen werd. Dat laatste rijenblok is mijn eigen toevoeging op wat
 // je vroeg — zeg gerust als dat weg mag of anders moet.
 function openTussenkomstForm(dossierObj, session, type, existingDoc){
+  pendingVerwijderdeFotoIds = [];
   const isEdit = !!existingDoc;
   const isCSI = type === "CSI-verslag";
   const specialisatie = type.split("-")[0];
@@ -3074,6 +3137,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
         dossierObj.documenten.push(newDoc);
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
       }
+      flushPendingVerwijderdeFotoIds();
       DB.save(db);
       closeModal();
       render();
@@ -3091,6 +3155,7 @@ function openTussenkomstForm(dossierObj, session, type, existingDoc){
 // wie ondervraagd werd, in welke hoedanigheid, of de cautie/rechten werden voorgelezen (en
 // wanneer) en of er bijstand van een advocaat was.
 function openVerhoorForm(dossierObj, session, type, existingDoc){
+  pendingVerwijderdeFotoIds = [];
   const isEdit = !!existingDoc;
   const bestaandeSecties = existingDoc && existingDoc.secties && existingDoc.secties.length
     ? existingDoc.secties.map(s => ({ kop: s.kop || "", tekst: s.tekst || "", fotos: (s.fotos || []).slice() }))
@@ -3205,6 +3270,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
         dossierObj.documenten.push({ id: "d" + (db.nextDocId++), type: "Verhoor-verslag", ...payload, auteurId: session.id, gezienDoor: [session.id] });
         logActiviteit(session, "Verhoor-verslag toegevoegd", dossierObj.naam);
       }
+      flushPendingVerwijderdeFotoIds();
       DB.save(db);
       closeModal();
       render();
@@ -3218,6 +3284,7 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
 
 /* ---------------- document toevoegen: beschikbare resultaten (interne spreadsheet/aanvullingen) ---------------- */
 function openResultatenForm(dossierObj, session, type, existingDoc){
+  pendingVerwijderdeFotoIds = [];
   const isEdit = !!existingDoc;
   const isTap = type === "TAP-dossier";
   const isBijstand = type === "Bijstandsaanvraag";
@@ -3369,6 +3436,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
         });
         logActiviteit(session, `${type} toegevoegd`, dossierObj.naam);
       }
+      flushPendingVerwijderdeFotoIds();
       DB.save(db);
       closeModal();
       render();
@@ -3381,6 +3449,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
 }
 
 function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
+  pendingVerwijderdeFotoIds = [];
   const isEdit = !!existingAanvulling;
   const state = {
     datum: (existingAanvulling && existingAanvulling.datum) || "",
@@ -3430,6 +3499,7 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
       doc.gezienDoor = [session.id];
       logActiviteit(session, `Aanvulling toegevoegd bij ${doc.type}`, dossierObj.naam);
     }
+    flushPendingVerwijderdeFotoIds();
     DB.save(db);
     closeModal();
     openDocDetail(doc, dossierObj, session);
@@ -3458,10 +3528,11 @@ function renderBeheer(session){
     // leden krijgen deze tabbladen niet te zien.
     ...(isAdmin(session) ? [
       { key: "codes", label: "Toegangscodes" },
-      { key: "activiteitenlog", label: "Activiteitenlog" }
+      { key: "activiteitenlog", label: "Activiteitenlog" },
+      { key: "opslag", label: "Opslag" }
     ] : [])
   ];
-  if ((view.beheerTab === "codes" || view.beheerTab === "activiteitenlog") && !isAdmin(session)) view.beheerTab = "leden";
+  if ((view.beheerTab === "codes" || view.beheerTab === "activiteitenlog" || view.beheerTab === "opslag") && !isAdmin(session)) view.beheerTab = "leden";
   const bar = wrap.querySelector("#beheerTabs");
   tabs.forEach(t => {
     const b = el(`<button class="navlink" style="padding:10px 14px;${view.beheerTab === t.key ? "color:var(--text);border-bottom:2px solid var(--gold)" : ""}">${t.label}</button>`);
@@ -3473,6 +3544,7 @@ function renderBeheer(session){
     view.beheerTab === "leden" ? beheerLeden(session)
     : view.beheerTab === "statistieken" ? beheerStatistieken(session)
     : view.beheerTab === "activiteitenlog" ? beheerActiviteitenlog(session)
+    : view.beheerTab === "opslag" ? beheerOpslag(session)
     : beheerCodes(session)
   );
   return wrap;
@@ -3845,6 +3917,79 @@ function beheerStatistieken(session){
       </table>
     </div>
   </div>`);
+  return wrap;
+}
+
+// Verzamelt alle foto-ID's die nog ergens in de databank gebruikt worden (over alle dossiers
+// heen), zodat dit vergeleken kan worden met wat er werkelijk in de recherche_fotos-verzameling
+// in Firestore staat &mdash; alles dat daar wel staat maar hier niet in voorkomt, is een weeskopie.
+function alleGebruikteFotoIds(){
+  const ids = new Set();
+  (db.dossiers || []).forEach(d => fotoIdsVanDossier(d).forEach(id => ids.add(id)));
+  return ids;
+}
+// Beheer-tabblad (enkel admin): spoort foto's op die nog in de recherche_fotos-verzameling staan
+// maar nergens meer in een dossier gebruikt worden (weeskopieën, bv. van vóór verwijderen van een
+// foto ook effectief de database opruimde, of door een onderbroken verbinding) en laat ze
+// definitief verwijderen.
+function beheerOpslag(session){
+  const wrap = el(`<div>
+    <div class="card">
+      <div class="section-title">Foto-opslag opruimen</div>
+      <div class="muted" style="font-size:13px;margin:8px 0 16px">Als een foto, document, betrokkene, voertuig of dossier verwijderd wordt, verdwijnt de foto zelf normaal mee uit de database. Door bv. een onderbroken verbinding, of van vóór deze opruimfunctie bestond, kunnen er toch nog losse "weeskopieën" overblijven &mdash; onzichtbaar in de app, maar nog wel plaats innemend in de gratis opslaglimiet. Met onderstaande knop spoor je ze op en verwijder je ze definitief.</div>
+      <button class="btn btn-gold btn-sm" id="scanOpruimBtn">Scannen op weeskopieën</button>
+      <div id="opruimResultaat" style="margin-top:16px"></div>
+    </div>
+  </div>`);
+  // De status wordt in "view" bijgehouden (niet enkel lokaal in deze DOM) omdat DB.save(db) de
+  // live Firestore-sync activeert, die op zijn beurt de hele app opnieuw rendert &mdash; een puur
+  // lokale DOM-aanpassing hier zou dan meteen weer overschreven worden door dat her-render.
+  const resultaat = wrap.querySelector("#opruimResultaat");
+  const st = view.opruimStatus;
+  if (st){
+    if (st.type === "bezig-scan") resultaat.innerHTML = `<div class="muted" style="font-size:13px">Bezig met scannen...</div>`;
+    else if (st.type === "geen") resultaat.innerHTML = `<div class="muted" style="font-size:13px">Geen weeskopieën gevonden &mdash; de opslag is netjes.</div>`;
+    else if (st.type === "gevonden") resultaat.innerHTML = `
+      <div style="font-size:13px;margin-bottom:10px">${st.ids.length} weeskopie(ën) gevonden &mdash; foto's die nergens meer aan een dossier gekoppeld zijn.</div>
+      <button class="btn btn-danger btn-sm" id="verwijderWezenBtn">Definitief verwijderen</button>`;
+    else if (st.type === "bezig-verwijderen") resultaat.innerHTML = `<div class="muted" style="font-size:13px">Bezig met verwijderen...</div>`;
+    else if (st.type === "klaar") resultaat.innerHTML = `<div class="muted" style="font-size:13px">${st.count} weeskopie(ën) verwijderd.</div>`;
+    else if (st.type === "fout") resultaat.innerHTML = `<div class="muted" style="font-size:13px">${st.bericht}</div>`;
+  }
+  const verwijderBtn = resultaat.querySelector("#verwijderWezenBtn");
+  if (verwijderBtn) verwijderBtn.addEventListener("click", () => {
+    const ids = view.opruimStatus.ids;
+    confirmModal(`${ids.length} weeskopie(ën) definitief verwijderen uit de database? Dit kan niet ongedaan gemaakt worden.`, () => {
+      view.opruimStatus = { type: "bezig-verwijderen" };
+      render();
+      Promise.all(ids.map(id => fotosCollectionRef.doc(id).delete())).then(() => {
+        logActiviteit(session, `${ids.length} weeskopie(ën) van foto's opgeruimd`);
+        DB.save(db);
+        view.opruimStatus = { type: "klaar", count: ids.length };
+        render();
+      }).catch(err => {
+        console.error("Weeskopieën verwijderen mislukt:", err);
+        view.opruimStatus = { type: "fout", bericht: "Er ging iets mis bij het verwijderen. Controleer je internetverbinding en probeer opnieuw." };
+        render();
+      });
+    });
+  });
+  wrap.querySelector("#scanOpruimBtn").addEventListener("click", () => {
+    if (!fotosCollectionRef){ view.opruimStatus = { type: "fout", bericht: "Geen databaseverbinding. Herlaad de pagina en probeer opnieuw." }; render(); return; }
+    view.opruimStatus = { type: "bezig-scan" };
+    render();
+    const gebruikt = alleGebruikteFotoIds();
+    fotosCollectionRef.get().then(snap => {
+      const wezen = [];
+      snap.forEach(docSnap => { if (!gebruikt.has(docSnap.id)) wezen.push(docSnap.id); });
+      view.opruimStatus = wezen.length ? { type: "gevonden", ids: wezen } : { type: "geen" };
+      render();
+    }).catch(err => {
+      console.error("Scannen op weeskopieën mislukt:", err);
+      view.opruimStatus = { type: "fout", bericht: "Scannen mislukt. Controleer je internetverbinding en probeer opnieuw." };
+      render();
+    });
+  });
   return wrap;
 }
 
