@@ -3319,15 +3319,19 @@ function openVerhoorForm(dossierObj, session, type, existingDoc){
         </div>
       </div>
       <div class="field"><label>Eind-uur (optioneel)</label><input class="mono" id="fEindTijd" value="${state.eindTijd}" placeholder="UU:MM" maxlength="5"></div>
-      <div class="field" style="display:flex; align-items:center; justify-content:space-between; gap:10px">
-        <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fCautie" ${state.cautie ? "checked" : ""}> Rechten ontvangen</label>
-        <span class="hint" id="toonRechtenBtn" style="cursor:pointer;text-decoration:underline;white-space:nowrap">Bekijk standaardtekst</span>
+      <div class="row2">
+        <div class="field">
+          <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fCautie" ${state.cautie ? "checked" : ""}> Rechten ontvangen</label>
+          <div class="hint" id="toonRechtenBtn" style="cursor:pointer;text-decoration:underline;margin-top:4px">Bekijk standaardtekst</div>
+        </div>
+        <div class="field">
+          <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fAdvocaat" ${state.advocaat ? "checked" : ""}> Bijstand advocaat</label>
+        </div>
       </div>
-      ${state.cautie ? `<div class="field"><label>Tijdstip rechten ontvangen</label><input class="mono" id="fCautieTijd" value="${state.cautieTijd}" placeholder="UU:MM" maxlength="5"></div>` : ""}
-      <div class="field">
-        <label style="font-size:13px;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" id="fAdvocaat" ${state.advocaat ? "checked" : ""}> Bijstand advocaat</label>
-      </div>
-      ${state.advocaat ? `<div class="field"><label>Naam advocaat</label><input id="fAdvocaatNaam" value="${state.advocaatNaam}"></div>` : ""}
+      ${(state.cautie || state.advocaat) ? `<div class="row2">
+        <div>${state.cautie ? `<div class="field"><label>Tijdstip rechten ontvangen</label><input class="mono" id="fCautieTijd" value="${state.cautieTijd}" placeholder="UU:MM" maxlength="5"></div>` : ""}</div>
+        <div>${state.advocaat ? `<div class="field"><label>Naam advocaat</label><input id="fAdvocaatNaam" value="${state.advocaatNaam}"></div>` : ""}</div>
+      </div>` : ""}
       <div class="field"><label>Titel / korte omschrijving</label><input id="fTitel" value="${state.titel}" placeholder="Verschijnt zo in de tijdlijn"></div>
       <div class="hint" style="margin:10px 0">Verklaring &mdash; eventueel opgedeeld in secties (bv. per vraag of per onderwerp)</div>
       <div id="sectiesWrap">${sectiesHtml}</div>
