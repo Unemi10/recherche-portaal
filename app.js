@@ -1473,7 +1473,7 @@ function dossierKaartTab(d, session){
     inner.appendChild(pin);
   });
   if (gekend.length) toonUitleg(gekend[0]);
-  requestAnimationFrame(() => dekonflicteerPinLabels(inner));
+  requestAnimationFrame(() => { centreerOpPins(); dekonflicteerPinLabels(inner); });
 
   // --- Zoom & pan op de kaart-viewport ---
   let scale = 1, tx = 0, ty = 0;
@@ -1497,6 +1497,23 @@ function dossierKaartTab(d, session){
     clamp();
     inner.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
     pasPinSchaalAan();
+  }
+  // Opent/herstelt de kaart niet op de linkerbovenhoek van de afbeelding, maar gecentreerd op de
+  // postcode-pins van dit dossier (het gemiddelde van de verst uiteenliggende pins), zodat je
+  // meteen ziet waar het dossier zich afspeelt in plaats van eerst te moeten zoeken/verslepen.
+  function centreerOpPins(){
+    scale = 1; tx = 0; ty = 0;
+    if (gekend.length){
+      const xs = gekend.map(pc => plekken[pc].x);
+      const ys = gekend.map(pc => plekken[pc].y);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const vw = viewport.clientWidth, vh = viewport.clientHeight;
+      const ih = inner.offsetHeight || vh;
+      tx = vw / 2 - cx * vw;
+      ty = vh / 2 - cy * ih;
+    }
+    apply();
   }
   function zoomAt(clientX, clientY, factor){
     const rect = viewport.getBoundingClientRect();
@@ -1523,7 +1540,7 @@ function dossierKaartTab(d, session){
     zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1 / 1.3);
   });
   wrap.querySelector("#kaartZoomReset").addEventListener("click", () => {
-    scale = 1; tx = 0; ty = 0; apply();
+    centreerOpPins();
   });
   let panning = false, startX = 0, startY = 0, startTx = 0, startTy = 0;
   viewport.addEventListener("pointerdown", (e) => {
@@ -1547,7 +1564,7 @@ function dossierKaartTab(d, session){
   viewport.addEventListener("pointercancel", stopPan);
   viewport.addEventListener("dblclick", (e) => {
     if (e.target.closest(".map-pin-clickable, .map-zoom-btn")) return;
-    scale = 1; tx = 0; ty = 0; apply();
+    centreerOpPins();
   });
   return wrap;
 }
