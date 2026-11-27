@@ -4010,6 +4010,18 @@ function donutChartHtml(title, segments){
       </div>
     </div>`;
 }
+// Vaste kleurenreeks voor de per-lid taartdiagrammen (los van de max. 2-3 vaste kleuren die de
+// andere donut-grafieken hierboven gebruiken, want hier kunnen er makkelijk meer dan 6 leden zijn).
+const LID_TAART_PALET = ["var(--gold)", "var(--blue)", "var(--purple)", "var(--red)", "var(--green)", "#e2a0a0", "#8a90a3", "#c9a4ff", "#ffd27a", "#7ad6c9", "#f29bc0", "#9fb8d9"];
+// Zet dezelfde rijen/waarde-functie als barChartHtml om naar segmenten voor donutChartHtml, zodat
+// per statistiek meteen zowel een staaf- als een taartdiagram getoond kan worden met dezelfde data.
+function memberDonutSegments(rows, getValue){
+  return rows.slice().sort((a, b) => getValue(b) - getValue(a)).map((r, i) => ({
+    label: naamMetCallsign(r.member),
+    value: getValue(r),
+    color: LID_TAART_PALET[i % LID_TAART_PALET.length]
+  }));
+}
 // Eenvoudige horizontale balkjes-grafiek in platte CSS (geen externe library nodig) &mdash; sorteert
 // aflopend op waarde en toont iedereen, ook leden op 0, zodat het beeld volledig is.
 function barChartHtml(title, rows, getValue){
@@ -4080,8 +4092,14 @@ function beheerStatistieken(session){
       ${donutChartHtml("Documenten per categorie", docKindSegments)}
       ${donutChartHtml("Status leden", statusSegments)}
     </div>
-    ${barChartHtml("Documenten + aanvullingen opgesteld per lid", stats, r => r.documenten + r.aanvullingen)}
-    ${barChartHtml("Keer aanwezig aangeduid per lid", stats, r => r.aanwezig)}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:4px">
+      ${barChartHtml("Documenten + aanvullingen opgesteld per lid", stats, r => r.documenten + r.aanvullingen)}
+      ${donutChartHtml("Documenten + aanvullingen per lid", memberDonutSegments(stats, r => r.documenten + r.aanvullingen))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:4px">
+      ${barChartHtml("Keer aanwezig aangeduid per lid", stats, r => r.aanwezig)}
+      ${donutChartHtml("Keer aanwezig per lid", memberDonutSegments(stats, r => r.aanwezig))}
+    </div>
     <div class="card" style="padding:0;overflow:hidden">
       <table class="simple">
         <thead><tr><th>Lid</th><th>Documenten</th><th>Aanvullingen</th><th>Aanwezig</th></tr></thead>
