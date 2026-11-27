@@ -270,6 +270,11 @@ function migrateDb(data){
         if (!doc.rows) doc.rows = [];
         if (!doc.aanvullingen) doc.aanvullingen = [];
       }
+      // Elke aanvulling krijgt een vast, uniek ID (oudere aanvullingen, van vóór dit bestond,
+      // krijgen er hier eenmalig één). Nodig zodat een aanvulling nog teruggevonden kan worden
+      // bij het bewerken/verwijderen, ook als de databoom intussen door een nieuwe Firestore-
+      // synchronisatie vervangen is (zie vindLeefDoc).
+      if (doc.aanvullingen) doc.aanvullingen.forEach(a => { if (!a.id) a.id = genereerAanvullingId(); });
       // Een Bijstandsaanvraag had de "Reden/context" eerst nog in het gedeelde "inhoud"-veld staan;
       // dat verhuist hier eenmalig naar het eigen "reden"-veld van de nieuwe, uitgebreidere opbouw.
       if (doc.type === "Bijstandsaanvraag" && !doc.reden && doc.inhoud){
@@ -448,13 +453,13 @@ function aanvullingenSectieHtml(doc, session){
   if (!aanvullingen.length) return "";
   return `
     <div class="hint" style="margin:16px 0 8px">Aanvullingen</div>
-    ${aanvullingen.map((a, i) => `
+    ${aanvullingen.map(a => `
       <div class="pv-loc">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
           <div style="font-size:11px;color:#8a90a3">${a.datum} &middot; ${a.tijd || ""} ${a.auteur ? "&middot; " + a.auteur : ""}</div>
           ${magAanvullingBewerken(a, doc, session) ? `<div style="display:flex;gap:10px;flex:0 0 auto">
-            <span class="aanv-edit" data-i="${i}" style="font-size:11px;color:var(--gold);cursor:pointer;font-weight:600">Bewerken</span>
-            <span class="aanv-del" data-i="${i}" style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600">Verwijderen</span>
+            <span class="aanv-edit" data-id="${a.id}" style="font-size:11px;color:var(--gold);cursor:pointer;font-weight:600">Bewerken</span>
+            <span class="aanv-del" data-id="${a.id}" style="font-size:11px;color:var(--red);cursor:pointer;font-weight:600">Verwijderen</span>
           </div>` : ""}
         </div>
         <div class="verslag-tekst">${renderOpgemaakteTekst(a.tekst)}</div>
@@ -465,22 +470,55 @@ function aanvullingenSectieHtml(doc, session){
 function addAanvullingBtnHtml(doc, session){
   return magAanvullingToevoegen(doc, session) ? `<button class="btn btn-ghost btn-sm" id="addAanvullingBtn">+ Aanvulling toevoegen</button>` : "";
 }
+// Zoekt een dossier/document opnieuw op aan de hand van hun ID, in de op dat moment actuele
+// (live) db &mdash; in plaats van te vertrouwen op een object-verwijzing die al een tijdje
+// vastgehouden wordt (bv. in een openstaand formulier). Dat laatste is nodig omdat de volledige
+// "db" bij elke Firestore-synchronisatie vervangen wordt door een compleet nieuwe boom (zie
+// startDbSync): zodra dat gebeurt terwijl iemand een formulier open heeft staan &mdash; bv. omdat
+// een collega ondertussen iets anders in hetzelfde dossier opslaat, of gewoon doordat je eigen
+// vorige opslag met een korte vertraging terug binnenkomt &mdash; houdt dat formulier nog de OUDE,
+// losstaande objecten vast. Een wijziging daarop doorvoeren en dan gewoon "DB.save(db)" aanroepen
+// zou die wijziging stil verliezen (de huidige, ondertussen al vervangen "db" wordt dan immers
+// opnieuw opgeslagen, zonder de wijziging): exact de "soms wel, meestal niet"-opslagbug bij
+// aanvullingen. Door dossier/document/aanvulling vlak vóór het opslaan opnieuw op te zoeken via
+// hun ID, wordt altijd op de actuele versie gewerkt.
+function vindLeefDossier(dossierId){
+  return (db.dossiers || []).find(x => x.id === dossierId) || null;
+}
+function vindLeefDoc(dossierId, docId){
+  const dossierObj = vindLeefDossier(dossierId);
+  if (!dossierObj) return null;
+  const doc = (dossierObj.documenten || []).find(x => x.id === docId);
+  return doc ? { dossierObj, doc } : null;
+}
 function wireAanvullingenKnoppen(doc, dossierObj, session){
-  const aanvullingen = sortChronologisch(doc.aanvullingen || [], x => x.datum, x => x.tijd);
+  const dossierId = dossierObj.id, docId = doc.id;
   const addBtn = document.getElementById("addAanvullingBtn");
-  if (addBtn) addBtn.addEventListener("click", () => { closeModal(); openAanvullingForm(doc, dossierObj, session); });
-  document.querySelectorAll(".aanv-edit").forEach(span => span.addEventListener("click", () => {
+  if (addBtn) addBtn.addEventListener("click", () => {
+    const live = vindLeefDoc(dossierId, docId);
+    if (!live){ alert("Dit document bestaat niet meer (mogelijk ondertussen verwijderd)."); closeModal(); render(); return; }
     closeModal();
-    openAanvullingForm(doc, dossierObj, session, aanvullingen[+span.dataset.i]);
+    openAanvullingForm(live.doc, live.dossierObj, session);
+  });
+  document.querySelectorAll(".aanv-edit").forEach(span => span.addEventListener("click", () => {
+    const live = vindLeefDoc(dossierId, docId);
+    if (!live){ alert("Dit document bestaat niet meer (mogelijk ondertussen verwijderd)."); closeModal(); render(); return; }
+    const aanvulling = (live.doc.aanvullingen || []).find(a => a.id === span.dataset.id);
+    if (!aanvulling){ alert("Deze aanvulling bestaat niet meer (mogelijk ondertussen verwijderd)."); openDocDetail(live.doc, live.dossierObj, session); return; }
+    closeModal();
+    openAanvullingForm(live.doc, live.dossierObj, session, aanvulling);
   }));
   document.querySelectorAll(".aanv-del").forEach(span => span.addEventListener("click", () => {
-    const target = aanvullingen[+span.dataset.i];
     confirmModal("Deze aanvulling verwijderen?", () => {
+      const live = vindLeefDoc(dossierId, docId);
+      if (!live){ alert("Dit document bestaat niet meer (mogelijk ondertussen verwijderd)."); closeModal(); render(); return; }
+      const target = (live.doc.aanvullingen || []).find(a => a.id === span.dataset.id);
+      if (!target){ openDocDetail(live.doc, live.dossierObj, session); return; }
       (target.foto_s || []).forEach(verwijderFoto);
-      doc.aanvullingen = doc.aanvullingen.filter(x => x !== target);
-      logActiviteit(session, "Aanvulling verwijderd", dossierObj.naam);
+      live.doc.aanvullingen = live.doc.aanvullingen.filter(x => x !== target);
+      logActiviteit(session, "Aanvulling verwijderd", live.dossierObj.naam);
       DB.save(db);
-      openDocDetail(doc, dossierObj, session);
+      openDocDetail(live.doc, live.dossierObj, session);
     });
   }));
 }
@@ -710,6 +748,11 @@ function wireOpmaakToolbars(container, selector){
 // ============================================================
 function genereerFotoId(){
   return "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+// Zelfde soort uniek ID, maar dan voor een aanvulling bij een document (zie verderop bij
+// vindLeefDoc/openAanvullingForm waarom dit nodig is).
+function genereerAanvullingId(){
+  return "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 // Leest een gekozen bestand in, tekent het verkleind op een canvas en levert het resultaat als
 // JPEG-base64 op (ruim voldoende leesbaar voor een dossier, maar typisch maar enkele tientallen
@@ -3478,6 +3521,7 @@ function openResultatenForm(dossierObj, session, type, existingDoc){
 
 function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
   pendingVerwijderdeFotoIds = [];
+  const dossierId = dossierObj.id, docId = doc.id, aanvullingId = existingAanvulling && existingAanvulling.id;
   const isEdit = !!existingAanvulling;
   const state = {
     datum: (existingAanvulling && existingAanvulling.datum) || "",
@@ -3515,22 +3559,43 @@ function openAanvullingForm(doc, dossierObj, session, existingAanvulling){
     const tijd = (modalBody.querySelector("#fATijd").value || "").trim();
     const tekst = (modalBody.querySelector("#fATekst").value || "").trim();
     if (!tekst) return;
-    if (!doc.aanvullingen) doc.aanvullingen = [];
+    // Het document (en het dossier erboven) hier opnieuw opzoeken aan de hand van hun ID, in
+    // plaats van de "doc"/"dossierObj" te gebruiken die bij het openen van dit formulier werden
+    // meegegeven: als er ondertussen (terwijl dit formulier openstond) een nieuwe Firestore-
+    // synchronisatie is binnengekomen &mdash; bv. doordat een collega iets anders heeft opgeslagen,
+    // of je eigen vorige opslag elders met wat vertraging terugkomt &mdash; is de volledige "db"
+    // intussen vervangen en zijn die meegegeven objecten losstaande, verouderde kopieën geworden.
+    // Rechtstreeks daarop verder bouwen zou deze aanvulling stil verliezen in plaats van opslaan.
+    const live = vindLeefDoc(dossierId, docId);
+    if (!live){
+      alert("Dit document bestaat niet meer (mogelijk ondertussen verwijderd). Je aanvulling kon niet opgeslagen worden.");
+      closeModal(); render();
+      return;
+    }
+    const liveDoc = live.doc, liveDossier = live.dossierObj;
+    if (!liveDoc.aanvullingen) liveDoc.aanvullingen = [];
     if (isEdit){
-      existingAanvulling.datum = datum; existingAanvulling.tijd = tijd;
-      existingAanvulling.tekst = tekst; existingAanvulling.foto_s = state.foto_s;
-      logActiviteit(session, "Aanvulling bewerkt", dossierObj.naam);
+      const liveAanvulling = liveDoc.aanvullingen.find(a => a.id === aanvullingId);
+      if (!liveAanvulling){
+        alert("Deze aanvulling bestaat niet meer (mogelijk ondertussen verwijderd). Je wijziging kon niet opgeslagen worden.");
+        closeModal();
+        openDocDetail(liveDoc, liveDossier, session);
+        return;
+      }
+      liveAanvulling.datum = datum; liveAanvulling.tijd = tijd;
+      liveAanvulling.tekst = tekst; liveAanvulling.foto_s = state.foto_s;
+      logActiviteit(session, "Aanvulling bewerkt", liveDossier.naam);
     } else {
-      doc.aanvullingen.push({ datum, tijd, tekst, auteur: session.naam, auteurId: session.id, foto_s: state.foto_s });
+      liveDoc.aanvullingen.push({ id: genereerAanvullingId(), datum, tijd, tekst, auteur: session.naam, auteurId: session.id, foto_s: state.foto_s });
       // Een nieuwe aanvulling maakt het document opnieuw "ongelezen" voor iedereen behalve wie ze nu
       // net toevoegde, zodat anderen zien dat er iets is bijgekomen.
-      doc.gezienDoor = [session.id];
-      logActiviteit(session, `Aanvulling toegevoegd bij ${doc.type}`, dossierObj.naam);
+      liveDoc.gezienDoor = [session.id];
+      logActiviteit(session, `Aanvulling toegevoegd bij ${liveDoc.type}`, liveDossier.naam);
     }
     flushPendingVerwijderdeFotoIds();
     DB.save(db);
     closeModal();
-    openDocDetail(doc, dossierObj, session);
+    openDocDetail(liveDoc, liveDossier, session);
     });
   }
   openModal(`<div id="docFormBody"></div>`);
