@@ -1594,6 +1594,29 @@ function dekonflicteerPinLabels(containerEl){
     }
   });
 }
+// Idem als centreerOpPins() verderop bij de grote, interactieve kaart-tab, maar dan voor deze
+// kleine, niet-interactieve minikaart: pant de inhoud verticaal zodat het midden van de
+// postcode-pins van dit dossier in beeld komt, in plaats van gewoon de (vaak grotendeels lege)
+// hele kaart te tonen op een te klein formaat.
+function centreerCompacteKaart(wrapEl, d){
+  if (!wrapEl) return;
+  const inner = wrapEl.querySelector(".dossier-map-inner-sm");
+  if (!inner) return;
+  const telling = dossierPostcodeTellingen(d);
+  const plekken = window.POSTCODE_PLEKKEN || {};
+  const gekend = Object.keys(telling).filter(pc => plekken[pc]);
+  let ty = 0;
+  if (gekend.length){
+    const ys = gekend.map(pc => plekken[pc].y);
+    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const vh = wrapEl.clientHeight;
+    const ih = inner.offsetHeight || vh;
+    ty = vh / 2 - cy * ih;
+    const minTy = Math.min(0, vh - ih);
+    ty = Math.max(minTy, Math.min(0, ty));
+  }
+  inner.style.transform = `translate(0, ${ty}px)`;
+}
 // Compacte kaart (enkel pins, geen legende) voor naast de chronologie in het Overzicht.
 function dossierKaartCompactHtml(d){
   const telling = dossierPostcodeTellingen(d);
@@ -1614,8 +1637,10 @@ function dossierKaartCompactHtml(d){
     <div class="card">
       <div class="section-title">Kaart</div>
       <div class="dossier-map-wrap dossier-map-wrap-sm">
-        <img src="assets/kaart.jpg" alt="Kaart" class="dossier-map-img" width="3000" height="4500">
-        ${pinsHtml}
+        <div class="dossier-map-inner-sm">
+          <img src="assets/kaart.jpg" alt="Kaart" class="dossier-map-img" width="3000" height="4500">
+          ${pinsHtml}
+        </div>
       </div>
       <div class="hint" style="margin-top:10px">Zie tab &ldquo;Kaart&rdquo; voor details per locatie.</div>
     </div>`;
@@ -1850,7 +1875,11 @@ function dossierOverzichtTijdlijn(d, session){
   if (addDocBtn) addDocBtn.addEventListener("click", () => openDocTypePicker(d, session));
   renderActiesCard(wrap.querySelector("#actiesEmbed"), d, session);
   wrap.querySelector("#tijdlijnEmbed").appendChild(dossierTijdlijn(d, session, false));
-  requestAnimationFrame(() => dekonflicteerPinLabels(wrap.querySelector(".dossier-map-wrap-sm")));
+  requestAnimationFrame(() => {
+    const kaartWrapSm = wrap.querySelector(".dossier-map-wrap-sm");
+    centreerCompacteKaart(kaartWrapSm, d);
+    dekonflicteerPinLabels(kaartWrapSm);
+  });
   return wrap;
 }
 
