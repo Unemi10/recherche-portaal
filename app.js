@@ -596,6 +596,48 @@ function go(tab, extra){
   render();
 }
 
+/* ---------------- diepe link naar een dossier/document (bv. vanuit een Discord-melding) ---------------- */
+// Ontleedt "#dossier=<id>&doc=<id>" (doc optioneel) uit de URL bij het opstarten van de app. Wordt
+// maar één keer ingelezen; de effectieve navigatie gebeurt pas zodra zowel de database als een
+// sessie klaarstaan (zie render() en de login-flow in openLoginModal hieronder), en wordt nadien
+// gewist zodat een latere her-render (bv. door een nieuwe Firestore-synchronisatie) niet opnieuw
+// naar hetzelfde dossier springt.
+let pendingDeepLink = parseDeepLinkHash();
+function parseDeepLinkHash(){
+  const hash = (location.hash || "").replace(/^#/, "");
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
+  const dossierId = params.get("dossier");
+  if (!dossierId) return null;
+  return { dossierId, docId: params.get("doc") || null };
+}
+// Bouwt de deelbare link zelf op (zie genereerDiscordMelding). Vast adres van het portaal zelf,
+// in plaats van de huidige locatie van de pagina: zo blijft de link altijd correct, ook als de
+// app ooit via een ander adres (bv. een preview-omgeving) bekeken wordt.
+const PORTAAL_BASIS_URL = "https://unemi10.github.io/recherche-portaal/";
+function portaalLink(dossierObj, doc){
+  let hash = "#dossier=" + encodeURIComponent(dossierObj.id);
+  if (doc && doc.id) hash += "&doc=" + encodeURIComponent(doc.id);
+  return PORTAAL_BASIS_URL + hash;
+}
+// Past een eventuele pendingDeepLink toe zodra er een sessie is: navigeert naar het juiste
+// dossier en, indien meegegeven, opent meteen het juiste document. Geeft true terug als er
+// effectief iets toegepast werd.
+function pasPendingDeepLinkToe(session){
+  if (!pendingDeepLink) return false;
+  const doel = pendingDeepLink;
+  pendingDeepLink = null;
+  history.replaceState(null, "", location.pathname + location.search);
+  const dossierObj = db.dossiers.find(d => d.id === doel.dossierId);
+  if (!dossierObj) return false;
+  go("dossiers", { dossierId: dossierObj.id, dossierTab: "tijdlijn" });
+  if (doel.docId){
+    const doc = (dossierObj.documenten || []).find(x => x.id === doel.docId);
+    if (doc) setTimeout(() => openDocDetail(doc, dossierObj, session), 50);
+  }
+  return true;
+}
+
 /* ---------------- helpers ---------------- */
 function el(html){
   const t = document.createElement("template");
@@ -1185,7 +1227,7 @@ function openLoginModal(){
     const code = document.getElementById("codeInput").value;
     if (login(code)){
       closeModal();
-      go("dossiers");
+      if (!pasPendingDeepLinkToe(getSession())) go("dossiers");
     } else {
       document.getElementById("loginError").style.display = "block";
     }
@@ -2039,15 +2081,39 @@ function bijstandExtraHtml(doc){
     blok("Dossierbeheerder(s)", doc.dossierbeheerders)
   ].join("");
 }
+// Icoon per documenttype, enkel om de Discord-melding meteen visueel herkenbaar te maken.
+const DISCORD_TYPE_EMOJI = {
+  "Melding": "📣",
+  "Algemeen verslag": "📄",
+  "Bijkomende informatie": "ℹ️",
+  "OBN-verslag": "👁️",
+  "CSI-verslag": "🔬",
+  "GO-verslag": "🚓",
+  "Opdracht": "⚖️",
+  "Verhoor-verslag": "🗣️",
+  "Beschikbare resultaten": "📊",
+  "TAP-dossier": "📞",
+  "Bijstandsaanvraag": "🆘"
+};
+// Escaped Discord-opmaaktekens (*, _, ~, `) in vrije tekst, zodat een titel of aanvulling die
+// toevallig zo'n teken bevat de opmaak van de melding hieronder niet doorbreekt.
+function discordEscape(str){
+  return String(str || "").replace(/([*_~`])/g, "\\$1");
+}
+// Kort, modern Discord-berichtje met een koptekst (###), een vetgedrukte meta-regel en de
+// inhoud als citaat (>), afgesloten met een kleine subtekst-regel (-#) als call-to-action &mdash;
+// allemaal standaard Discord-markdown, dus dit rendert mooi zodra het in Discord geplakt wordt.
+// Geeft bewust geen inhoud van het document/de aanvulling mee &mdash; enkel waar het over gaat
+// (type/auteur/datum) en een link naar het portaal zelf, zodat mensen die echt moeten doorklikken
+// om de details te zien in plaats van alles al in Discord te kunnen lezen.
 function genereerDiscordMelding(doc, dossierObj){
-  const titel = docTitelKort(doc).replace(/&ndash;/g, "-").replace(/&middot;/g, "-");
   const laatsteAanvulling = (doc.aanvullingen || []).length ? doc.aanvullingen[doc.aanvullingen.length - 1] : null;
-  let tekst = `📋 Nieuwe toevoeging in dossier **${dossierObj.naam}**\n`;
-  tekst += `${doc.type}${doc.auteur ? " · " + doc.auteur : ""} · ${doc.datum}${doc.tijd ? " " + doc.tijd : ""}\n`;
-  tekst += `${titel}`;
-  if (laatsteAanvulling) tekst += `\nNieuwe aanvulling: ${laatsteAanvulling.tekst}`;
-  tekst += `\nBekijk het portaal voor alle details.`;
-  return tekst;
+  const emoji = DISCORD_TYPE_EMOJI[doc.type] || "📋";
+  const auteur = discordEscape(doc.auteur);
+  const meta = `**${doc.type}**${auteur ? " · " + auteur : ""} · ${doc.datum}${doc.tijd ? " " + doc.tijd : ""}`;
+  const kop = laatsteAanvulling ? `### 📝 ${dossierObj.naam} — aanvulling` : `### ${emoji} ${dossierObj.naam} — nieuw document`;
+  const link = portaalLink(dossierObj, doc);
+  return `${kop}\n${meta}\n[👉 Bekijk in het portaal](${link})`;
 }
 function copyToClipboard(tekst, btn){
   const toon = (ok) => {
@@ -4519,6 +4585,18 @@ function render(){
   const protectedTabs = ["dossiers", "opleidingen", "beheer"];
   if (!session && protectedTabs.includes(view.tab)) view.tab = "overons";
   if (session && !magBeheerZien(session) && view.tab === "beheer") view.tab = "dossiers";
+
+  // Diepe link (bv. vanuit een Discord-melding) meteen afhandelen zodra db en sessie klaarstaan;
+  // zonder sessie eerst de aanmeldmodal tonen (enkel als die nog niet al openstaat, anders zou elke
+  // her-render tijdens het typen van de toegangscode het veld resetten).
+  if (pendingDeepLink){
+    if (session){
+      pasPendingDeepLinkToe(session);
+      return;
+    } else if (!document.getElementById("modal-root").hasChildNodes()){
+      openLoginModal();
+    }
+  }
 
   renderNav();
   renderApp();
