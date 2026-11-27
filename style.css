@@ -193,7 +193,11 @@ table.simple td{padding:12px 14px; border-top:1px solid var(--border)}
 .muted{color:var(--muted2)}
 .section-title{font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin:0 0 16px}
 .dossier-map-wrap{position:relative; width:100%; max-width:100%; border-radius:10px; overflow:hidden; border:1px solid var(--border2); background:#4f7fa3}
-.dossier-map-wrap-sm{max-width:260px}
+/* Vaste (kortere) hoogte dan de volledige kaart, zodat er iets te verschuiven valt: de inhoud
+   (.dossier-map-inner-sm) wordt verticaal gepand zodat de pins van dit dossier gecentreerd in
+   beeld komen, in plaats van simpelweg de hele (vaak grotendeels lege) kaart te tonen. */
+.dossier-map-wrap-sm{max-width:260px; height:200px}
+.dossier-map-inner-sm{position:absolute; top:0; left:0; width:100%}
 .dossier-map-img{display:block; width:100%; height:auto}
 /* .map-pin zelf heeft bewust geen afmetingen: left/top (in %) is exact de echte coördinaat, en
    alles daarbinnen (dot, label) wordt t.o.v. dat ene punt (0,0) gepositioneerd. Zo blijft de dot
