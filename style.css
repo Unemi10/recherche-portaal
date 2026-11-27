@@ -122,6 +122,9 @@ button{font-family:inherit}
 .field input.mono{font-family:'Courier New',monospace; letter-spacing:.03em}
 .field input:focus, .field select:focus, .field textarea:focus{border-color:var(--gold)}
 .hint{font-size:10px; color:var(--muted2); margin-top:-2px}
+/* Rode rand zodra een volledig ingetypte datum/tijd ongeldig is (zie markeerVeldGeldigheid in app.js). */
+.veld-ongeldig{border-color:var(--red) !important}
+.veld-ongeldig:focus{border-color:var(--red) !important}
 
 /* ---------- opmaak-toolbar (boven tekstvakken met opmaakfunctionaliteit) ---------- */
 .opmaak-toolbar{display:flex; gap:4px; margin-bottom:6px}
