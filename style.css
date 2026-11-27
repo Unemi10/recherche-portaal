@@ -28,6 +28,12 @@ button{font-family:inherit}
 .navlink:hover{color:var(--text)}
 .navlink.active{color:var(--text); border-bottom:2px solid var(--gold)}
 
+.tijdlijn-scroll-box{max-height:65vh; overflow-y:auto; padding-right:8px; margin-right:-8px}
+.tijdlijn-scroll-box::-webkit-scrollbar{width:8px}
+.tijdlijn-scroll-box::-webkit-scrollbar-track{background:transparent}
+.tijdlijn-scroll-box::-webkit-scrollbar-thumb{background:var(--border2); border-radius:8px}
+.tijdlijn-scroll-box::-webkit-scrollbar-thumb:hover{background:var(--muted2)}
+
 .page{max-width:1200px; margin:0 auto; padding:40px 40px 80px}
 .hidden{display:none !important}
 
