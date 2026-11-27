@@ -4339,8 +4339,8 @@ function beheerStatistieken(session){
       ${donutChartHtml("Status leden", statusSegments)}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:4px">
-      ${barChartHtml("Documenten + aanvullingen opgesteld per lid", stats, r => r.documenten + r.aanvullingen)}
-      ${donutChartHtml("Documenten + aanvullingen per lid", memberDonutSegments(stats, r => r.documenten + r.aanvullingen))}
+      ${barChartHtml("Documenten opgesteld per lid", stats, r => r.documenten)}
+      ${donutChartHtml("Documenten per lid", memberDonutSegments(stats, r => r.documenten))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:4px">
       ${barChartHtml("Keer aanwezig aangeduid per lid", stats, r => r.aanwezig)}
