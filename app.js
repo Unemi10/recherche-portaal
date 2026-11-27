@@ -1569,16 +1569,19 @@ function dossierOverzichtTijdlijn(d, session){
       <div style="flex:2;min-width:300px">
         <div class="row" style="margin-bottom:16px">
           <div class="section-title" style="margin:0">Chronologisch verloop</div>
+          ${session ? `<button class="btn btn-gold btn-sm" id="addDocBtn">+ Document toevoegen</button>` : ""}
         </div>
-        <div id="tijdlijnEmbed"></div>
+        <div id="tijdlijnEmbed" class="tijdlijn-scroll-box"></div>
       </div>
       <div style="flex:1;min-width:220px">${dossierKaartCompactHtml(d)}</div>
     </div>
   </div>`);
   const editBtn = wrap.querySelector("#editOverzichtBtn");
   if (editBtn) editBtn.addEventListener("click", () => openOverzichtForm(d));
+  const addDocBtn = wrap.querySelector("#addDocBtn");
+  if (addDocBtn) addDocBtn.addEventListener("click", () => openDocTypePicker(d, session));
   renderActiesCard(wrap.querySelector("#actiesEmbed"), d, session);
-  wrap.querySelector("#tijdlijnEmbed").appendChild(dossierTijdlijn(d, session, true));
+  wrap.querySelector("#tijdlijnEmbed").appendChild(dossierTijdlijn(d, session, false));
   requestAnimationFrame(() => dekonflicteerPinLabels(wrap.querySelector(".dossier-map-wrap-sm")));
   return wrap;
 }
@@ -1832,7 +1835,6 @@ function docTypeChipClass(type){
 }
 
 function docRow(doc, dossierObj, session){
-  const canEdit = magDocBewerken(doc, session);
   const ongelezen = isDocOngelezen(doc, session);
   const row = el(`<div class="card ${ongelezen ? "doc-unread" : ""}" style="display:flex;gap:16px;align-items:flex-start;${doc.pending ? "border-style:dashed;opacity:.75" : ""};margin-bottom:8px;cursor:pointer">
     <div style="flex:0 0 92px">
@@ -1849,28 +1851,8 @@ function docRow(doc, dossierObj, session){
       <div style="font-size:13px;font-weight:600">${docTitelKort(doc)}</div>
       <div class="muted" style="font-size:11px;margin-top:3px">${doc.auteur || ""}</div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
-      ${canEdit ? `<button class="btn btn-ghost btn-sm copy-discord" title="Kopieer Discord-melding">Kopieer</button>` : ""}
-      ${canEdit ? `<button class="btn btn-danger btn-sm del-doc">Verwijderen</button>` : ""}
-    </div>
   </div>`);
-  row.addEventListener("click", (e) => { if (!e.target.closest(".del-doc") && !e.target.closest(".copy-discord")) openDocDetail(doc, dossierObj, session); });
-  const delBtn = row.querySelector(".del-doc");
-  if (delBtn) delBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    confirmModal("Dit document verwijderen? Het verdwijnt ook uit de tijdlijn.", () => {
-      fotoIdsVanDoc(doc).forEach(verwijderFoto);
-      dossierObj.documenten = dossierObj.documenten.filter(x => x !== doc);
-      logActiviteit(session, `${doc.type} verwijderd`, dossierObj.naam);
-      DB.save(db);
-      render();
-    });
-  });
-  const copyBtn = row.querySelector(".copy-discord");
-  if (copyBtn) copyBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    copyToClipboard(genereerDiscordMelding(doc, dossierObj), copyBtn);
-  });
+  row.addEventListener("click", () => openDocDetail(doc, dossierObj, session));
   return row;
 }
 
